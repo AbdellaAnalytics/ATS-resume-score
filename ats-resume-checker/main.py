@@ -1,45 +1,54 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pdfplumber
-import io
 from docx import Document
+from io import BytesIO
 from datetime import datetime
 import requests
 import traceback
 
 app = FastAPI()
 
-# CORS settings
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # adjust in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def extract_text_from_pdf(file_bytes):
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        return "\n".join([page.extract_text() or "" for page in pdf.pages])
+# Google Apps Script Webhook URL (replace with yours)
+GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
 
-def extract_text_from_docx(file_bytes):
-    doc = Document(io.BytesIO(file_bytes))
+# Extract text from PDF
+def extract_text_from_pdf(contents):
+    with pdfplumber.open(BytesIO(contents)) as pdf:
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+        return text
+
+# Extract text from DOCX
+def extract_text_from_docx(contents):
+    doc = Document(BytesIO(contents))
     return "\n".join([para.text for para in doc.paragraphs])
 
+# Simple ATS score simulation (based on text length)
 def calculate_ats_score(text):
-    keywords = ['python', 'data', 'sql', 'analysis', 'excel', 'power bi', 'machine learning']
-    score = sum(1 for word in keywords if word.lower() in text.lower())
-    return int((score / len(keywords)) * 100)
+    score = min(100, max(10, len(text) // 50))
+    return score
 
-def log_to_google_sheets(file_name, score, timestamp):
-    sheet_url = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
-    data = {"file_name": file_name, "ats_score": score, "timestamp": timestamp}
-    try:
-        response = requests.post(sheet_url, json=data)
-        print(f"Logged to Google Sheets: {response.status_code}")
-    except Exception as e:
-        print("Error logging to Google Sheets:", e)
+# Log data to Google Sheets
+def log_to_google_sheets(filename, score, timestamp):
+    payload = {
+        "file_name": filename,
+        "ats_score": score,
+        "timestamp": timestamp
+    }
+    response = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload)
+    print("Logged to Google Sheets:", response.status_code)
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
@@ -49,8 +58,7 @@ async def upload_resume(file: UploadFile = File(...)):
         print("Received file:", file.filename)
         print("Content type:", content_type)
 
-        text = ""
-
+        # Extract text based on file type
         if content_type == "application/pdf" or file.filename.endswith(".pdf"):
             text = extract_text_from_pdf(contents)
         elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or file.filename.endswith(".docx"):
@@ -59,20 +67,22 @@ async def upload_resume(file: UploadFile = File(...)):
             return JSONResponse(status_code=400, content={"error": "Unsupported file type."})
 
         print("Extracted text length:", len(text))
-
         ats_score = calculate_ats_score(text)
         print("ATS Score:", ats_score)
 
-        # Logging to Google Sheets
         timestamp = datetime.now().strftime("%m/%d/%Y %H:%M")
         log_to_google_sheets(file.filename, ats_score, timestamp)
 
         return {"score": ats_score}
 
     except Exception as e:
-        print("Exception occurred:")
-        traceback.print_exc()
+        error_trace = traceback.format_exc()
+        print("Traceback:", error_trace)
         return JSONResponse(
             status_code=500,
-            content={"error": "Failed to analyze resume. Please try again.", "details": str(e)}
+            content={
+                "error": "Failed to analyze resume. Please try again.",
+                "details": str(e),
+                "trace": error_trace
+            }
         )
