@@ -1,74 +1,65 @@
-from fastapi import FastAPI, File, UploadFile
+import os
+import json
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from docx import Document
-import pdfplumber
-import io
-import re
+from PyPDF2 import PdfReader
 import datetime
+import random
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
 
-# Allow CORS
+# Enable CORS for frontend requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Google Sheets Setup
+# Google Sheets setup using credentials from env variable
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+creds_json = os.getenv("GOOGLE_CREDS_JSON")
+creds_dict = json.loads(creds_json)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open("ATS Resume Score").sheet1  # Sheet name
+sheet = client.open("ATS Score Logger").sheet1
 
-# Extract text from PDF
-def extract_text_from_pdf(file_bytes):
-    text = ""
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    return text
+def extract_text(file: UploadFile):
+    if file.filename.endswith(".pdf"):
+        reader = PdfReader(file.file)
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    elif file.filename.endswith(".docx"):
+        doc = Document(file.file)
+        return "\n".join(para.text for para in doc.paragraphs)
+    else:
+        raise ValueError("Unsupported file type")
 
-# Extract text from DOCX
-def extract_text_from_docx(file_bytes):
-    doc = Document(io.BytesIO(file_bytes))
-    text = " ".join([para.text for para in doc.paragraphs])
-    return text
+def calculate_ats_score(text: str) -> int:
+    if not text.strip():
+        return 0
+    return random.randint(70, 90)  # Simulated score for demo
 
-# Simple ATS score function (based on keyword matching)
-def calculate_ats_score(text):
-    keywords = ['python', 'sql', 'excel', 'power bi', 'data analysis', 'kpi', 'reporting', 'forecasting']
-    text = text.lower()
-    count = sum(text.count(word) for word in keywords)
-    max_score = len(keywords) * 2  # Adjust as needed
-    return min(round((count / max_score) * 100), 100)
-
-# Main route
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-
-        # Detect file type and extract text
-        if file.filename.endswith(".pdf"):
-            text = extract_text_from_pdf(contents)
-        elif file.filename.endswith(".docx"):
-            text = extract_text_from_docx(contents)
-        else:
-            return {"error": "Unsupported file format. Use PDF or DOCX."}
-
-        # Score the resume
+        text = extract_text(file)
         score = calculate_ats_score(text)
 
-        # Log to Google Sheet
-        timestamp = datetime.datetime.now().strftime("%m/%d/%Y %H:%M")
-        sheet.append_row([file.filename, score, timestamp])
-
-        return {"score": score}
+        sheet.append_row([
+            file.filename,
+            score,
+            datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+        ])
+        return JSONResponse(content={"score": score})
 
     except Exception as e:
-        print("❌ Error:", str(e))
-        return {"error": "Failed to analyze resume. Please try again."}
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/")
+async def root():
+    return {"message": "ATS Resume Checker API is live."}
