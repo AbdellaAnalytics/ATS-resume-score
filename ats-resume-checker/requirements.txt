@@ -6,3 +6,4 @@ docx2txt
 openai
 python-dotenv
 openai>=1.2.0
+python-docx
