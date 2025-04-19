@@ -1,13 +1,12 @@
 import os
-from fastapi import FastAPI, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from PyPDF2 import PdfReader
+import json
+import fitz  # PyMuPDF
 import docx2txt
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-from dotenv import load_dotenv
 import openai
 
-load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
@@ -15,101 +14,72 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-def extract_text_from_pdf(file):
+def extract_text_from_pdf(file_path):
+    text = ""
     try:
-        pdf = PdfReader(file)
-        text = ""
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-        return text
+        with fitz.open(file_path) as doc:
+            for page in doc:
+                text += page.get_text()
     except Exception as e:
-        print("PDF error:", str(e))
-        return ""
+        print("PDF extract error:", e)
+    return text
 
-
-def extract_text_from_docx(file):
+def extract_text_from_docx(file_path):
     try:
-        return docx2txt.process(file)
+        return docx2txt.process(file_path)
     except Exception as e:
-        print("DOCX error:", str(e))
+        print("DOCX extract error:", e)
         return ""
-
 
 def analyze_with_gpt(text):
     prompt = f"""
-You are an ATS resume analyzer. Read the resume below and return a JSON report that includes:
+    Analyze the following resume:
+    {text}
 
-- ats_score: out of 100
-- summary: a short summary of the resume
-- strengths: list of key strengths
-- missing_points: list of missing or weak points
-- recommendations: short tips to improve
+    Provide:
+    - An ATS compatibility score from 0 to 100
+    - A short summary of the resume
+    - Strengths
+    - Missing keywords or weaknesses
+    - Actionable recommendations
 
-Resume:
-{text[:3000]}
+    Respond in JSON with keys: ats_score, summary, strengths, weaknesses, recommendations.
     """
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You're an expert ATS resume analyzer."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4,
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4
         )
-        content = response.choices[0].message.content.strip()
-        print("GPT Response:", content[:300])
-        return content
+        gpt_reply = response.choices[0].message.content
+        return json.loads(gpt_reply)
     except Exception as e:
-        print("GPT error:", str(e))
+        print("GPT error:", e)
         return None
-
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    try:
-        extension = file.filename.split(".")[-1].lower()
-        contents = await file.read()
+    file_path = f"temp_{file.filename}"
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
 
-        if extension == "pdf":
-            with open("temp_resume.pdf", "wb") as f:
-                f.write(contents)
-            resume_text = extract_text_from_pdf("temp_resume.pdf")
+    if file.filename.endswith(".pdf"):
+        text = extract_text_from_pdf(file_path)
+    elif file.filename.endswith(".docx"):
+        text = extract_text_from_docx(file_path)
+    else:
+        return JSONResponse(status_code=400, content={"error": "Unsupported file format."})
 
-        elif extension == "docx":
-            with open("temp_resume.docx", "wb") as f:
-                f.write(contents)
-            resume_text = extract_text_from_docx("temp_resume.docx")
+    os.remove(file_path)
 
-        else:
-            return JSONResponse(content={"error": "Unsupported file format"}, status_code=400)
-
-        print("Extracted Text Sample:", resume_text[:1000])
-
-        # استخدم GPT لو المفتاح موجود
-        if openai.api_key:
-            gpt_response = analyze_with_gpt(resume_text)
-            if gpt_response:
-                return JSONResponse(content={"gpt_result": gpt_response})
-            else:
-                return JSONResponse(content={"error": "Failed to get GPT analysis"}, status_code=500)
-        else:
-            # تحليل تقليدي بدون GPT
-            word_count = len(resume_text.split())
-            score = min(100, max(10, word_count // 10))
-            return {
-                "ats_score": score,
-                "summary": "Basic analysis completed (GPT not active).",
-                "strengths": ["N/A"],
-                "missing_points": ["N/A"],
-                "recommendations": ["Enable GPT API key for detailed analysis."]
-            }
-
-    except Exception as e:
-        print("Resume error:", str(e))
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+    gpt_result = analyze_with_gpt(text)
+    if gpt_result:
+        return gpt_result
+    else:
+        return JSONResponse(status_code=500, content={"error": "Failed to get GPT analysis"})
