@@ -1,9 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from PyPDF2 import PdfReader
+import uvicorn
 import docx2txt
-import tempfile
+import fitz  # PyMuPDF
+import json
 import os
+import re
 
 app = FastAPI()
 
@@ -15,72 +17,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Extensive list of industry keywords
-KEYWORDS = [
-    # Programming & Tech
-    "python", "java", "javascript", "html", "css", "react", "node.js", "sql", "api", "git", "docker", "aws", "azure",
-    "c++", "c#", "php", "typescript", "flutter", "kotlin", "swift", "linux", "bash", "tensorflow", "pytorch",
+# Load keywords
+with open("universal_keywords.json", "r", encoding="utf-8") as f:
+    KEYWORDS = json.load(f)
 
-    # Data & Analytics
-    "excel", "power bi", "tableau", "sql", "data analysis", "data visualization", "machine learning", "statistics",
-    "r", "python", "pandas", "numpy", "data science", "etl", "big data", "kpi", "dashboard", "predictive modeling",
+# Combine all keywords across all fields
+ALL_KEYWORDS = []
+for category_keywords in KEYWORDS.values():
+    ALL_KEYWORDS.extend([kw.lower() for kw in category_keywords])
 
-    # Customer Service
-    "customer service", "call center", "crm", "problem-solving", "communication skills", "multitasking",
-    "handling complaints", "customer satisfaction",
+# Remove duplicates
+ALL_KEYWORDS = list(set(ALL_KEYWORDS))
 
-    # Marketing & Sales
-    "marketing", "digital marketing", "seo", "sem", "google ads", "facebook ads", "sales", "negotiation",
-    "crm", "email marketing", "social media", "content creation", "branding", "lead generation",
+def extract_text_from_docx(file_path):
+    try:
+        return docx2txt.process(file_path)
+    except Exception as e:
+        return ""
 
-    # Engineering
-    "autocad", "solidworks", "matlab", "engineering", "design", "manufacturing", "production", "cad", "cam",
-    "electrical", "mechanical", "civil", "structural", "project management",
+def extract_text_from_pdf(file_path):
+    try:
+        text = ""
+        with fitz.open(file_path) as pdf:
+            for page in pdf:
+                text += page.get_text()
+        return text
+    except Exception:
+        return ""
 
-    # Finance & Accounting
-    "accounting", "finance", "budgeting", "forecasting", "financial analysis", "erp", "sap", "quickbooks",
-    "tax", "audit", "bookkeeping", "cash flow", "balance sheet", "p&l", "journal entries",
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+    return text
 
-    # Management & Soft Skills
-    "leadership", "management", "teamwork", "communication", "problem solving", "time management",
-    "adaptability", "conflict resolution", "strategic planning", "decision making",
-
-    # Education / Training
-    "teaching", "training", "curriculum development", "lesson planning", "instruction", "online teaching",
-    "education", "lms", "classroom management", "assessment"
-]
+def calculate_score(text):
+    text = clean_text(text)
+    matched_keywords = [kw for kw in ALL_KEYWORDS if kw in text]
+    score = round((len(set(matched_keywords)) / len(ALL_KEYWORDS)) * 100)
+    return min(score, 100)
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    temp_file_path = f"temp{file_ext}"
+
     try:
-        contents = await file.read()
-        temp_path = f"temp_{file.filename}"
-        with open(temp_path, "wb") as f:
-            f.write(contents)
+        with open(temp_file_path, "wb") as f:
+            f.write(await file.read())
 
-        text = ""
-        if file.filename.endswith(".pdf"):
-            try:
-                reader = PdfReader(temp_path)
-                for page in reader.pages:
-                    text += page.extract_text() or ""
-            except:
-                os.remove(temp_path)
-                return {"error": "Failed to read PDF. Is it valid?"}
-
-        elif file.filename.endswith(".docx"):
-            text = docx2txt.process(temp_path)
+        if file_ext == ".pdf":
+            text = extract_text_from_pdf(temp_file_path)
+        elif file_ext == ".docx":
+            text = extract_text_from_docx(temp_file_path)
         else:
-            os.remove(temp_path)
-            return {"error": "Unsupported file format. Please upload PDF or DOCX."}
+            return {"error": "Unsupported file type. Please upload a PDF or DOCX."}
 
-        os.remove(temp_path)
+        if not text.strip():
+            return {"error": "Could not extract text from the file."}
 
-        text = text.lower()
-        matches = [word for word in KEYWORDS if word.lower() in text]
-        score = int((len(set(matches)) / len(KEYWORDS)) * 100)
-
+        score = calculate_score(text)
         return {"ats_score": score}
 
     except Exception as e:
-        return {"error": f"Error processing file: {str(e)}"}
+        return {"error": f"Failed to analyze resume. Error: {str(e)}"}
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=10000, reload=True)
