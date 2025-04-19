@@ -1,16 +1,18 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
-import pdfplumber
-from docx import Document
-from io import BytesIO
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 from datetime import datetime
-import requests
+import pdfplumber
+import io
+from docx import Document
 import traceback
+import requests
+import mimetypes
 
 app = FastAPI()
 
-# CORS middleware
+# CORS settings (allow all for testing)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,59 +21,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Google Apps Script Webhook URL (replace with yours)
-GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
+# Google Sheets Script URL
+GOOGLE_SHEETS_WEBHOOK = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
 
-# Extract text from PDF
-def extract_text_from_pdf(contents):
-    with pdfplumber.open(BytesIO(contents)) as pdf:
-        text = ""
-        for page in pdf.pages:
-            text += page.extract_text() or ""
+def extract_text_from_pdf(file_bytes):
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            text = ''
+            for page in pdf.pages:
+                text += page.extract_text() or ''
         return text
+    except Exception as e:
+        raise Exception("PDF extraction failed: " + str(e))
 
-# Extract text from DOCX
-def extract_text_from_docx(contents):
-    doc = Document(BytesIO(contents))
-    return "\n".join([para.text for para in doc.paragraphs])
+def extract_text_from_docx(file_bytes):
+    try:
+        doc = Document(io.BytesIO(file_bytes))
+        return '\n'.join([p.text for p in doc.paragraphs])
+    except Exception as e:
+        raise Exception("DOCX extraction failed: " + str(e))
 
-# Simple ATS score simulation (based on text length)
-def calculate_ats_score(text):
-    score = min(100, max(10, len(text) // 50))
+def calculate_ats_score(text: str) -> int:
+    # Example ATS score logic (based on word count)
+    score = min(100, int(len(text.split()) / 10))
     return score
-
-# Log data to Google Sheets
-def log_to_google_sheets(filename, score, timestamp):
-    payload = {
-        "file_name": filename,
-        "ats_score": score,
-        "timestamp": timestamp
-    }
-    response = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=payload)
-    print("Logged to Google Sheets:", response.status_code)
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
+        filename = file.filename
         contents = await file.read()
-        content_type = file.content_type
-        print("Received file:", file.filename)
-        print("Content type:", content_type)
+        content_type = file.content_type or mimetypes.guess_type(filename)[0]
 
-        # Extract text based on file type
-        if content_type == "application/pdf" or file.filename.endswith(".pdf"):
+        if content_type == "application/pdf" or filename.endswith(".pdf"):
             text = extract_text_from_pdf(contents)
-        elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or file.filename.endswith(".docx"):
+        elif content_type in [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword"
+        ] or filename.endswith(".docx"):
             text = extract_text_from_docx(contents)
         else:
             return JSONResponse(status_code=400, content={"error": "Unsupported file type."})
 
-        print("Extracted text length:", len(text))
-        ats_score = calculate_ats_score(text)
-        print("ATS Score:", ats_score)
+        if not text.strip():
+            return JSONResponse(status_code=400, content={"error": "Empty or unreadable resume."})
 
-        timestamp = datetime.now().strftime("%m/%d/%Y %H:%M")
-        log_to_google_sheets(file.filename, ats_score, timestamp)
+        ats_score = calculate_ats_score(text)
+
+        # Send to Google Sheets
+        payload = {
+            "file_name": filename,
+            "ats_score": ats_score,
+            "timestamp": datetime.now().strftime("%m/%d/%Y %H:%M")
+        }
+
+        response = requests.post(GOOGLE_SHEETS_WEBHOOK, data=payload)
+        print("Logged to Google Sheets:", response.status_code)
 
         return {"score": ats_score}
 
