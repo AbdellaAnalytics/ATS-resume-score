@@ -1,13 +1,13 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import docx2txt
-import pdfplumber
-import tempfile
+from PyPDF2 import PdfReader
 import os
+from langdetect import detect
 
 app = FastAPI()
 
-# Enable CORS
+# للسماح بالاتصال من الواجهة
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,49 +16,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Keywords in English and Arabic
-keywords = [
-    "Python", "SQL", "Excel", "Power BI", "data analysis", "communication",
-    "بايثون", "إكسل", "تحليل البيانات", "تنسيق", "مهارات التواصل", "باور بي آي"
+# الكلمات المفتاحية العامة
+ENGLISH_KEYWORDS = [
+    "data analysis", "Excel", "Python", "Power BI", "SQL", "dashboard",
+    "KPI", "visualization", "report", "insights", "business intelligence"
 ]
 
-def extract_text_from_docx(file):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(file.file.read())
-        tmp_path = tmp.name
-    text = docx2txt.process(tmp_path)
-    os.remove(tmp_path)
-    return text
+ARABIC_KEYWORDS = [
+    "تحليل البيانات", "إكسل", "باور بي آي", "بايثون", "تقارير", "مؤشرات الأداء",
+    "عرض مرئي", "مخططات", "نظام المحاسبة", "تحليل"
+]
 
-def extract_text_from_pdf(file):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(file.file.read())
-        tmp_path = tmp.name
-    text = ""
-    with pdfplumber.open(tmp_path) as pdf:
+def extract_text(file: UploadFile):
+    ext = file.filename.lower().split('.')[-1]
+    if ext == 'pdf':
+        pdf = PdfReader(file.file)
+        text = ''
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    os.remove(tmp_path)
-    return text
+            text += page.extract_text() or ''
+    elif ext == 'docx':
+        temp_path = f"temp_{file.filename}"
+        with open(temp_path, "wb") as f:
+            f.write(file.file.read())
+        text = docx2txt.process(temp_path)
+        os.remove(temp_path)
+    else:
+        text = ''
+    return text.strip()
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        filename = file.filename.lower()
-        if filename.endswith(".docx"):
-            text = extract_text_from_docx(file)
-        elif filename.endswith(".pdf"):
-            text = extract_text_from_pdf(file)
-        else:
-            return {"error": "Unsupported file format. Please upload a .pdf or .docx file."}
+        text = extract_text(file)
+        language = detect(text) if text else "unknown"
+        keywords = ARABIC_KEYWORDS if language == "ar" else ENGLISH_KEYWORDS
+        text_lower = text.lower()
 
-        text = text.lower()
-        score = sum(1 for word in keywords if word.lower() in text)
-        ats_score = int((score / len(keywords)) * 100)
+        matched_keywords = [kw for kw in keywords if kw.lower() in text_lower]
+        score = int((len(matched_keywords) / len(keywords)) * 100)
 
-        return {"ats_score": ats_score}
+        return {
+            "ats_score": score,
+            "matched_keywords": matched_keywords,
+            "language": language
+        }
 
     except Exception as e:
         return {"error": str(e)}
