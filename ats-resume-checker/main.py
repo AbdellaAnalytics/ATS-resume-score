@@ -1,86 +1,84 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import HTMLResponse
-import pdfplumber
-from docx import Document
+import uvicorn
+import os
+import tempfile
+import fitz  # PyMuPDF for PDF
 import requests
-from datetime import datetime
-import io
+from docx import Document
 
 app = FastAPI()
 
-# Allow CORS for frontend integration
+# CORS setup for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Replace with specific domain in production
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Google Apps Script endpoint
-GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
-
 @app.get("/", response_class=HTMLResponse)
-async def home():
-    return "<h1>ATS Resume Score Checker is Running</h1>"
+async def root():
+    return "✅ ATS Resume Score API is running."
 
 @app.post("/upload-resume/")
-async def upload_resume(file: UploadFile = File(...)):
+async def analyze_resume(file: UploadFile = File(...)):
     try:
-        content = await file.read()
-        filename = file.filename.lower()
+        filename = file.filename
+        print("Received file:", filename)
+        print("Content type:", file.content_type)
 
-        # Extract text from PDF or DOCX
-        if filename.endswith(".pdf"):
-            text = extract_text_from_pdf(content)
-        elif filename.endswith(".docx"):
-            text = extract_text_from_docx(content)
-        else:
-            return JSONResponse(status_code=400, content={"error": "Unsupported file format. Only PDF and DOCX allowed."})
+        with tempfile.NamedTemporaryFile(delete=False) as temp:
+            temp.write(await file.read())
+            temp.flush()
+            text = ""
 
-        print("Extracted text length:", len(text))
+            # PDF handling
+            if filename.endswith(".pdf"):
+                doc = fitz.open(temp.name)
+                for page in doc:
+                    text += page.get_text()
+                doc.close()
 
-        if len(text.strip()) < 100:
-            return JSONResponse(status_code=400, content={"error": "Resume is too short or could not be processed. Try a different file."})
+            # DOCX handling
+            elif filename.endswith(".docx"):
+                try:
+                    docx_file = Document(temp.name)
+                    text = "\n".join([para.text for para in docx_file.paragraphs])
+                except Exception as e:
+                    print("DOCX parsing error:", e)
+                    return JSONResponse(status_code=400, content={"error": "DOCX parsing failed"})
 
-        # Score is based on length (very simplified)
-        score = min(int((len(text) / 3000) * 100), 100)
+            else:
+                return JSONResponse(status_code=400, content={"error": "Unsupported file type"})
 
-        # Log to Google Sheets
-        log_to_google_sheets(file.filename, score)
+            extracted_length = len(text)
+            print("Extracted text length:", extracted_length)
 
-        return {"score": score}
-    
+            # Dummy score logic based on length
+            score = min(100, int(extracted_length / 30)) if extracted_length > 0 else 0
+            print("ATS Score:", score)
+
+            # Google Sheets Logging
+            try:
+                log_url = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
+                params = {
+                    "filename": filename,
+                    "score": score,
+                    "timestamp": "now"
+                }
+                response = requests.get(log_url, params=params)
+                print("Logged to Google Sheets:", response.status_code)
+            except Exception as e:
+                print("Google Sheets logging error:", e)
+
+            return {"score": score}
+
     except Exception as e:
-        print("Error:", str(e))
-        return JSONResponse(status_code=500, content={"error": "Failed to analyze resume. Please try again."})
+        print("General error:", str(e))
+        return JSONResponse(status_code=500, content={"error": "Unknown issue"})
 
-
-def extract_text_from_pdf(content: bytes) -> str:
-    text = ""
-    with pdfplumber.open(io.BytesIO(content)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    return text
-
-
-def extract_text_from_docx(content: bytes) -> str:
-    doc = Document(io.BytesIO(content))
-    return "\n".join([para.text for para in doc.paragraphs])
-
-
-def log_to_google_sheets(filename: str, score: int):
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        payload = {
-            "filename": filename,
-            "score": score,
-            "timestamp": now,
-        }
-        response = requests.post(GOOGLE_SCRIPT_URL, json=payload)
-        print("Logged to Google Sheets:", response.status_code)
-    except Exception as e:
-        print("Failed to log to Google Sheets:", str(e))
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
