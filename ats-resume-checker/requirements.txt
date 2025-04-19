@@ -3,3 +3,4 @@ uvicorn
 PyPDF2
 python-docx
 python-multipart
+docx2txt
