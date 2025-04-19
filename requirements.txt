@@ -4,3 +4,4 @@ python-multipart
 PyPDF2
 docx2txt
 requests
+pdfplumber
