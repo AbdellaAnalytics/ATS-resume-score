@@ -1,13 +1,15 @@
-from pathlib import Path
-import difflib
-import json
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from docx import Document
-import PyPDF2
+from PyPDF2 import PdfReader
+import json
+import difflib
+import os
+import io
 
 app = FastAPI()
 
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,60 +18,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# تحميل الكلمات المفتاحية من الملف الخارجي
+# Load keywords from JSON (should be in same directory)
 with open("keywords_full.json", "r", encoding="utf-8") as f:
     KEYWORDS = json.load(f)
 
-def extract_text_from_pdf(file_path):
+# Flatten keywords from all categories
+ALL_KEYWORDS = set()
+for category_keywords in KEYWORDS.values():
+    ALL_KEYWORDS.update([kw.lower() for kw in category_keywords])
+
+# Extract text from PDF
+def extract_text_from_pdf(file_bytes):
     text = ""
-    with open(file_path, "rb") as f:
-        reader = PyPDF2.PdfReader(f)
-        for page in reader.pages:
-            text += page.extract_text() or ""
-    return text
+    reader = PdfReader(io.BytesIO(file_bytes))
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    return text.lower()
 
-def extract_text_from_docx(file_path):
-    doc = Document(file_path)
-    return "\n".join([para.text for para in doc.paragraphs])
+# Extract text from DOCX
+def extract_text_from_docx(file_bytes):
+    with open("temp.docx", "wb") as f:
+        f.write(file_bytes)
+    doc = Document("temp.docx")
+    os.remove("temp.docx")
+    return " ".join([para.text for para in doc.paragraphs]).lower()
 
-def extract_text(file_path: Path) -> str:
-    ext = file_path.suffix.lower()
-    if ext == ".pdf":
-        return extract_text_from_pdf(file_path)
-    elif ext == ".docx":
-        return extract_text_from_docx(file_path)
-    elif ext == ".doc":
-        return extract_text_from_docx(file_path)  # basic fallback
-    else:
-        raise ValueError("Unsupported file type")
+# Match keywords approximately using difflib
+def calculate_score(text, threshold=0.85):
+    words = set(text.split())
+    matched = set()
+    for kw in ALL_KEYWORDS:
+        if difflib.get_close_matches(kw, words, n=1, cutoff=threshold):
+            matched.add(kw)
+    score = int((len(matched) / len(ALL_KEYWORDS)) * 100) if ALL_KEYWORDS else 0
+    return score, matched
 
-def count_matches(resume_text, keywords_dict, threshold=0.8):
-    resume_text_lower = resume_text.lower()
-    resume_words = set(resume_text_lower.split())
-    all_keywords = set()
-
-    for category in keywords_dict:
-        all_keywords.update([kw.lower() for kw in keywords_dict[category]])
-
-    matched_keywords = set()
-    for kw in all_keywords:
-        matches = difflib.get_close_matches(kw, resume_words, n=1, cutoff=threshold)
-        if matches:
-            matched_keywords.add(kw)
-
-    score = int((len(matched_keywords) / len(all_keywords)) * 100)
-    return score, matched_keywords
-
+# API endpoint to analyze resume
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        file_location = f"temp_{file.filename}"
-        with open(file_location, "wb") as f:
-            f.write(await file.read())
+        contents = await file.read()
+        ext = file.filename.lower().split(".")[-1]
 
-        text = extract_text(Path(file_location))
-        score, matched = count_matches(text, KEYWORDS)
-        return {"ats_score": score, "matched_keywords": list(matched)}
+        if ext == "pdf":
+            text = extract_text_from_pdf(contents)
+        elif ext == "docx":
+            text = extract_text_from_docx(contents)
+        else:
+            return {"error": "Unsupported file type. Upload PDF or DOCX."}
 
+        if not text or len(text) < 30:
+            return {"error": "Unable to extract meaningful content from resume."}
+
+        score, matched = calculate_score(text)
+        return {
+            "ats_score": score,
+            "matched_keywords": sorted(matched),
+            "total_keywords": len(ALL_KEYWORDS)
+        }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Failed to process resume. Error: {str(e)}"}
