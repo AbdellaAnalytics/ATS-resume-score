@@ -17,17 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load keywords
+# Load keywords from list
 with open("universal_keywords.json", "r", encoding="utf-8") as f:
     KEYWORDS = json.load(f)
 
-# Combine all keywords across all fields
-ALL_KEYWORDS = []
-for category_keywords in KEYWORDS.values():
-    ALL_KEYWORDS.extend([kw.lower() for kw in category_keywords])
-
-# Remove duplicates
-ALL_KEYWORDS = list(set(ALL_KEYWORDS))
+ALL_KEYWORDS = [kw.lower() for kw in KEYWORDS]  # Flattened list of all keywords
 
 def extract_text_from_docx(file_path):
     try:
