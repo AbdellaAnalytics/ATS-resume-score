@@ -2,4 +2,4 @@ fastapi
 uvicorn
 python-multipart
 docx2txt
-PyPDF2
+pdfplumber
