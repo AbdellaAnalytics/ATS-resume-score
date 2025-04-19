@@ -1,5 +1,6 @@
-python-docx
-requests
-PyMuPDF
 fastapi
 uvicorn
+python-docx
+PyMuPDF
+requests
+python-multipart
