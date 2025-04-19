@@ -1,15 +1,15 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import os
 from docx import Document
 import pdfplumber
+from datetime import datetime
 import requests
-import datetime
-import io
 
 app = FastAPI()
 
-# Allow CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,67 +18,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def extract_text_from_pdf(file_bytes):
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            return "\n".join([page.extract_text() or '' for page in pdf.pages])
-    except Exception as e:
-        return None
+GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
 
-def extract_text_from_docx(file_bytes):
-    try:
-        doc = Document(io.BytesIO(file_bytes))
-        return "\n".join([para.text for para in doc.paragraphs])
-    except Exception as e:
-        return None
+def extract_text_from_docx(file_path):
+    doc = Document(file_path)
+    return "\n".join([para.text for para in doc.paragraphs])
+
+def extract_text_from_pdf(file_path):
+    with pdfplumber.open(file_path) as pdf:
+        return "\n".join([page.extract_text() or "" for page in pdf.pages])
 
 def calculate_ats_score(text):
-    if not text:
-        return 0
-    length = len(text.strip())
-    if length == 0:
-        return 0
-    elif length < 500:
-        return 50
-    elif length < 1000:
-        return 75
-    else:
-        return 90
+    # Placeholder logic
+    return min(100, int(len(text) / 30))
 
-def log_to_google_sheets(name, score):
+def log_to_google_sheets(filename, score):
     try:
-        response = requests.post(
-            "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec",
-            json={
-                "name": name,
-                "score": score,
-                "timestamp": str(datetime.datetime.now())
-            },
-            timeout=10
-        )
+        data = {
+            "filename": filename,
+            "score": score,
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        response = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=data)
         return response.status_code
     except Exception as e:
+        print("Logging error:", e)
         return None
 
 @app.post("/upload-resume/")
-async def analyze_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...)):
     try:
-        content = await file.read()
-        filename = file.filename
+        contents = await file.read()
+        temp_path = f"temp_{file.filename}"
+        with open(temp_path, "wb") as f:
+            f.write(contents)
 
-        if filename.endswith(".pdf"):
-            text = extract_text_from_pdf(content)
-        elif filename.endswith(".docx"):
-            text = extract_text_from_docx(content)
+        # Detect file type
+        if file.filename.endswith(".docx"):
+            text = extract_text_from_docx(temp_path)
+        elif file.filename.endswith(".pdf"):
+            text = extract_text_from_pdf(temp_path)
         else:
-            return JSONResponse(status_code=400, content={"error": "Unsupported file type."})
-
-        if not text:
-            return JSONResponse(status_code=500, content={"error": "Failed to extract text."})
+            return JSONResponse(content={"error": "Unsupported file type."}, status_code=400)
 
         score = calculate_ats_score(text)
-        log_to_google_sheets(filename, score)
+        log_status = log_to_google_sheets(file.filename, score)
 
-        return {"score": score}
+        os.remove(temp_path)
+        return {"ats_score": score}
+
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "Unknown issue."})
+        print("Server Error:", e)
+        return JSONResponse(content={"error": "Unknown issue."}, status_code=500)
+
+@app.get("/")
+def root():
+    return HTMLResponse(content="<h2>Resume Score API is live</h2>")
+
