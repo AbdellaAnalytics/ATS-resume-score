@@ -1,13 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import docx2txt
-from PyPDF2 import PdfReader
+import pdfplumber
+import tempfile
 import os
-from langdetect import detect
 
 app = FastAPI()
 
-# للسماح بالاتصال من الواجهة
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,50 +14,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# الكلمات المفتاحية العامة
-ENGLISH_KEYWORDS = [
-    "data analysis", "Excel", "Python", "Power BI", "SQL", "dashboard",
-    "KPI", "visualization", "report", "insights", "business intelligence"
+# 🔍 كلمات مفتاحية عامة شاملة لأغلب الوظائف (هندسة، محاسبة، تسويق، برمجة، خدمة عملاء، مبيعات...)
+keywords = [
+    # 🧑‍💻 برمجة وتقنية
+    "python", "java", "sql", "html", "css", "javascript", "data analysis", "machine learning", "api", "software engineer",
+    # 📊 تحليل بيانات وذكاء أعمال
+    "excel", "power bi", "tableau", "dashboard", "visualization", "insights", "kpi", "business intelligence",
+    # 📞 خدمة عملاء
+    "customer service", "crm", "call center", "support", "resolve", "ticketing system",
+    # 📢 تسويق ومبيعات
+    "marketing", "sales", "seo", "social media", "facebook ads", "campaign", "promotion", "target",
+    # 🏗️ هندسة ومجال صناعي
+    "autocad", "welding", "pipeline", "mechanical", "electrical", "civil", "fabrication", "technical drawing", "maintenance",
+    # 🧾 محاسبة ومالية
+    "accounting", "tax", "journal", "ledger", "erp", "sap", "oracle", "budget", "financial analysis", "balance sheet",
+    # 💼 إدارة ومهارات ناعمة
+    "project management", "leadership", "teamwork", "communication", "problem solving", "time management",
+    # 📚 تعليم وتدريب
+    "training", "e-learning", "instruction", "curriculum", "teacher", "coach",
+    # 💬 عربي (أساسي)
+    "محاسبة", "ضرائب", "مشروعات", "تحليل البيانات", "مهارات التواصل", "دعم فني", "مشرف", "إدارة فريق", "إكسل", "تقارير"
 ]
 
-ARABIC_KEYWORDS = [
-    "تحليل البيانات", "إكسل", "باور بي آي", "بايثون", "تقارير", "مؤشرات الأداء",
-    "عرض مرئي", "مخططات", "نظام المحاسبة", "تحليل"
-]
-
-def extract_text(file: UploadFile):
-    ext = file.filename.lower().split('.')[-1]
-    if ext == 'pdf':
-        pdf = PdfReader(file.file)
-        text = ''
+def extract_text_from_pdf(uploaded_file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.file.read())
+        tmp_path = tmp.name
+    text = ''
+    with pdfplumber.open(tmp_path) as pdf:
         for page in pdf.pages:
-            text += page.extract_text() or ''
-    elif ext == 'docx':
-        temp_path = f"temp_{file.filename}"
-        with open(temp_path, "wb") as f:
-            f.write(file.file.read())
-        text = docx2txt.process(temp_path)
-        os.remove(temp_path)
-    else:
-        text = ''
-    return text.strip()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    os.remove(tmp_path)
+    return text
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        text = extract_text(file)
-        language = detect(text) if text else "unknown"
-        keywords = ARABIC_KEYWORDS if language == "ar" else ENGLISH_KEYWORDS
+        text = extract_text_from_pdf(file)
         text_lower = text.lower()
-
-        matched_keywords = [kw for kw in keywords if kw.lower() in text_lower]
-        score = int((len(matched_keywords) / len(keywords)) * 100)
-
+        matched = [kw for kw in keywords if kw.lower() in text_lower]
+        score = int((len(matched) / len(keywords)) * 100)
         return {
             "ats_score": score,
-            "matched_keywords": matched_keywords,
-            "language": language
+            "matched_keywords": matched,
+            "total_keywords": len(keywords)
         }
-
     except Exception as e:
         return {"error": str(e)}
