@@ -1,93 +1,74 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
-from datetime import datetime
+from docx import Document
 import pdfplumber
 import io
-from docx import Document
-import traceback
-import requests
-import mimetypes
+import re
+import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
 
-# CORS settings (allow all for testing)
+# Allow CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Google Sheets Script URL
-GOOGLE_SHEETS_WEBHOOK = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
+# Google Sheets Setup
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open("ATS Resume Score").sheet1  # Sheet name
 
+# Extract text from PDF
 def extract_text_from_pdf(file_bytes):
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            text = ''
-            for page in pdf.pages:
-                text += page.extract_text() or ''
-        return text
-    except Exception as e:
-        raise Exception("PDF extraction failed: " + str(e))
+    text = ""
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
 
+# Extract text from DOCX
 def extract_text_from_docx(file_bytes):
-    try:
-        doc = Document(io.BytesIO(file_bytes))
-        return '\n'.join([p.text for p in doc.paragraphs])
-    except Exception as e:
-        raise Exception("DOCX extraction failed: " + str(e))
+    doc = Document(io.BytesIO(file_bytes))
+    text = " ".join([para.text for para in doc.paragraphs])
+    return text
 
-def calculate_ats_score(text: str) -> int:
-    # Example ATS score logic (based on word count)
-    score = min(100, int(len(text.split()) / 10))
-    return score
+# Simple ATS score function (based on keyword matching)
+def calculate_ats_score(text):
+    keywords = ['python', 'sql', 'excel', 'power bi', 'data analysis', 'kpi', 'reporting', 'forecasting']
+    text = text.lower()
+    count = sum(text.count(word) for word in keywords)
+    max_score = len(keywords) * 2  # Adjust as needed
+    return min(round((count / max_score) * 100), 100)
 
+# Main route
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        filename = file.filename
         contents = await file.read()
-        content_type = file.content_type or mimetypes.guess_type(filename)[0]
 
-        if content_type == "application/pdf" or filename.endswith(".pdf"):
+        # Detect file type and extract text
+        if file.filename.endswith(".pdf"):
             text = extract_text_from_pdf(contents)
-        elif content_type in [
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/msword"
-        ] or filename.endswith(".docx"):
+        elif file.filename.endswith(".docx"):
             text = extract_text_from_docx(contents)
         else:
-            return JSONResponse(status_code=400, content={"error": "Unsupported file type."})
+            return {"error": "Unsupported file format. Use PDF or DOCX."}
 
-        if not text.strip():
-            return JSONResponse(status_code=400, content={"error": "Empty or unreadable resume."})
+        # Score the resume
+        score = calculate_ats_score(text)
 
-        ats_score = calculate_ats_score(text)
+        # Log to Google Sheet
+        timestamp = datetime.datetime.now().strftime("%m/%d/%Y %H:%M")
+        sheet.append_row([file.filename, score, timestamp])
 
-        # Send to Google Sheets
-        payload = {
-            "file_name": filename,
-            "ats_score": ats_score,
-            "timestamp": datetime.now().strftime("%m/%d/%Y %H:%M")
-        }
-
-        response = requests.post(GOOGLE_SHEETS_WEBHOOK, data=payload)
-        print("Logged to Google Sheets:", response.status_code)
-
-        return {"score": ats_score}
+        return {"score": score}
 
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print("Traceback:", error_trace)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Failed to analyze resume. Please try again.",
-                "details": str(e),
-                "trace": error_trace
-            }
-        )
+        print("❌ Error:", str(e))
+        return {"error": "Failed to analyze resume. Please try again."}
