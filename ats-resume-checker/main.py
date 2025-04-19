@@ -1,50 +1,67 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from docx import Document
-from PyPDF2 import PdfReader
-import random
+import docx2txt
+import PyPDF2
+import tempfile
+import os
 
+# ✅ FastAPI app instance (MUST be at top level)
 app = FastAPI()
 
-# Allow frontend to connect
+# ✅ CORS setup to allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins (adjust as needed)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def extract_text_from_pdf(file):
-    reader = PdfReader(file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text()
+# ✅ Extract text from PDF or DOCX
+def extract_text(file: UploadFile):
+    if file.filename.endswith(".pdf"):
+        pdf_reader = PyPDF2.PdfReader(file.file)
+        text = " ".join([
+            page.extract_text() for page in pdf_reader.pages
+            if page.extract_text()
+        ])
+    elif file.filename.endswith(".docx"):
+        file.file.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        text = docx2txt.process(tmp_path)
+        os.unlink(tmp_path)
+    else:
+        text = ""
     return text
 
-def extract_text_from_docx(file):
-    doc = Document(file)
-    return "\n".join([para.text for para in doc.paragraphs])
+# ✅ Calculate ATS Score
+def calculate_ats_score(text: str) -> int:
+    score = 0
+    keywords = [
+        "experience", "skills", "education", "summary", "achievements", "projects"
+    ]
+    for word in keywords:
+        if word in text.lower():
+            score += 15
+    return min(score, 100)
 
+# ✅ Resume Upload Endpoint
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        text = ""
+    print("📄 File received:", file.filename)
+    file.file.seek(0)
+    text = extract_text(file)
+    print("📝 Extracted text:", text)
 
-        if file.filename.endswith(".pdf"):
-            text = extract_text_from_pdf(file.file)
-        elif file.filename.endswith(".docx"):
-            text = extract_text_from_docx(file.file)
-        else:
-            return {"error": "Unsupported file format."}
+    if not text:
+        return {"error": "Could not read file."}
 
-        score = random.randint(70, 95)
-        return {
-            "filename": file.filename,
-            "ats_score": score,
-            "message": "Resume analyzed successfully!"
-        }
+    score = calculate_ats_score(text)
+    return {"ats_score": score}
 
-    except Exception as e:
-        return {"error": f"Failed to analyze resume. Reason: {str(e)}"}
+# ✅ Optional root route
+@app.get("/")
+def root():
+    return {"message": "ATS Resume Score API is running."}
