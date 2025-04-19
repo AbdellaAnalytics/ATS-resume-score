@@ -1,15 +1,14 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import os
-from docx import Document
+from starlette.responses import JSONResponse
+import docx
 import pdfplumber
-from datetime import datetime
 import requests
+from datetime import datetime
 
 app = FastAPI()
 
+# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,60 +17,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
+# --- Helper functions ---
 
-def extract_text_from_docx(file_path):
-    doc = Document(file_path)
+def extract_text_from_docx(file):
+    doc = docx.Document(file)
     return "\n".join([para.text for para in doc.paragraphs])
 
-def extract_text_from_pdf(file_path):
-    with pdfplumber.open(file_path) as pdf:
-        return "\n".join([page.extract_text() or "" for page in pdf.pages])
+def extract_text_from_pdf(file):
+    text = ""
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
 
-def calculate_ats_score(text):
-    # Placeholder logic
-    return min(100, int(len(text) / 30))
+def calculate_score(text):
+    if not text or len(text.strip()) < 100:
+        return 0
+    score = min(100, len(text) // 30)
+    return score
 
 def log_to_google_sheets(filename, score):
     try:
-        data = {
-            "filename": filename,
-            "score": score,
-            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        response = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=data)
-        return response.status_code
+        requests.post(
+            "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec",
+            json={"filename": filename, "score": score, "timestamp": datetime.now().isoformat()}
+        )
     except Exception as e:
         print("Logging error:", e)
-        return None
+
+# --- Routes ---
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        temp_path = f"temp_{file.filename}"
-        with open(temp_path, "wb") as f:
-            f.write(contents)
+        file.file.seek(0)
 
-        # Detect file type
         if file.filename.endswith(".docx"):
-            text = extract_text_from_docx(temp_path)
+            text = extract_text_from_docx(file.file)
         elif file.filename.endswith(".pdf"):
-            text = extract_text_from_pdf(temp_path)
+            text = extract_text_from_pdf(file.file)
         else:
-            return JSONResponse(content={"error": "Unsupported file type."}, status_code=400)
+            return JSONResponse(status_code=400, content={"error": "Unsupported file format."})
 
-        score = calculate_ats_score(text)
-        log_status = log_to_google_sheets(file.filename, score)
+        score = calculate_score(text)
+        log_to_google_sheets(file.filename, score)
 
-        os.remove(temp_path)
-        return {"ats_score": score}
+        return {"score": score}
 
     except Exception as e:
-        print("Server Error:", e)
-        return JSONResponse(content={"error": "Unknown issue."}, status_code=500)
-
-@app.get("/")
-def root():
-    return HTMLResponse(content="<h2>Resume Score API is live</h2>")
-
+        print("ERROR:", e)
+        return JSONResponse(status_code=500, content={"error": "Failed to analyze resume. Please try again."})
