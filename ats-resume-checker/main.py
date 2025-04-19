@@ -1,14 +1,13 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import docx2txt
-import fitz  # PyMuPDF
+from docx import Document
+from PyPDF2 import PdfReader
 import json
 import os
-import re
 
 app = FastAPI()
 
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,66 +16,70 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load keywords from list
-with open("universal_keywords.json", "r", encoding="utf-8") as f:
-    KEYWORDS = json.load(f)
+# Load all keywords from keywords.json
+with open("keywords.json", "r", encoding="utf-8") as file:
+    KEYWORDS = json.load(file)
 
-ALL_KEYWORDS = [kw.lower() for kw in KEYWORDS]  # Flattened list of all keywords
-
-def extract_text_from_docx(file_path):
+# Helper function to extract text from PDF
+def extract_text_from_pdf(file):
     try:
-        return docx2txt.process(file_path)
+        reader = PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
     except Exception as e:
         return ""
 
-def extract_text_from_pdf(file_path):
+# Helper function to extract text from DOCX
+def extract_text_from_docx(file):
     try:
-        text = ""
-        with fitz.open(file_path) as pdf:
-            for page in pdf:
-                text += page.get_text()
-        return text
-    except Exception:
+        doc = Document(file)
+        return " ".join([para.text for para in doc.paragraphs])
+    except Exception as e:
         return ""
 
-def clean_text(text):
-    text = text.lower()
-    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
-    return text
-
+# Score calculation
 def calculate_score(text):
-    text = clean_text(text)
-    matched_keywords = [kw for kw in ALL_KEYWORDS if kw in text]
-    score = round((len(set(matched_keywords)) / len(ALL_KEYWORDS)) * 100)
-    return min(score, 100)
+    text = text.lower()
+    found_keywords = set()
+    total_keywords = 0
+
+    for category in KEYWORDS:
+        keywords = category.get("keywords", [])
+        total_keywords += len(keywords)
+        for keyword in keywords:
+            if keyword.lower() in text:
+                found_keywords.add(keyword.lower())
+
+    if total_keywords == 0:
+        return 0
+
+    score = round((len(found_keywords) / total_keywords) * 100)
+    return score
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    temp_file_path = f"temp{file_ext}"
+    contents = await file.read()
+    extension = os.path.splitext(file.filename)[1].lower()
 
-    try:
-        with open(temp_file_path, "wb") as f:
-            f.write(await file.read())
+    if extension == ".pdf":
+        with open("temp.pdf", "wb") as f:
+            f.write(contents)
+        text = extract_text_from_pdf("temp.pdf")
+        os.remove("temp.pdf")
 
-        if file_ext == ".pdf":
-            text = extract_text_from_pdf(temp_file_path)
-        elif file_ext == ".docx":
-            text = extract_text_from_docx(temp_file_path)
-        else:
-            return {"error": "Unsupported file type. Please upload a PDF or DOCX."}
+    elif extension == ".docx":
+        with open("temp.docx", "wb") as f:
+            f.write(contents)
+        text = extract_text_from_docx("temp.docx")
+        os.remove("temp.docx")
 
-        if not text.strip():
-            return {"error": "Could not extract text from the file."}
+    else:
+        return {"error": "Unsupported file format. Please upload a PDF or DOCX file."}
 
-        score = calculate_score(text)
-        return {"ats_score": score}
+    if not text.strip():
+        return {"error": "Could not extract text from the resume. Make sure the file is not scanned or empty."}
 
-    except Exception as e:
-        return {"error": f"Failed to analyze resume. Error: {str(e)}"}
-    finally:
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=10000, reload=True)
+    score = calculate_score(text)
+    return {"ats_score": score}
