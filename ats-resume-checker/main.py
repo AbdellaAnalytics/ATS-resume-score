@@ -53,11 +53,30 @@ def calculate_ats_score(text: str) -> int:
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
     print("📩 Received file:", file.filename)
+    print("📄 Content type:", file.content_type)
     file.file.seek(0)
 
     text = extract_text(file)
+    print("📝 Extracted text length:", len(text))
+
     if not text.strip():
-        return {"error": "Could not extract text. Try a different file format or check the PDF content."}
+        print("⚠️ No text extracted.")
+        return {"error": "Could not read file."}
 
     score = calculate_ats_score(text)
+    print("✅ ATS Score:", score)
+
+    # Send metadata to Google Sheets
+    try:
+        requests.post(
+            "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec",
+            json={
+                "filename": file.filename,
+                "ats_score": score,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+        )
+    except Exception as e:
+        print("⚠️ Failed to log to Google Sheets:", e)
+
     return {"ats_score": score}
