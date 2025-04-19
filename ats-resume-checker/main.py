@@ -1,98 +1,67 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": None,
-   "id": "e40158b6",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "from fastapi import FastAPI, UploadFile, File\n",
-    "from fastapi.middleware.cors import CORSMiddleware\n",
-    "import docx2txt\n",
-    "import PyPDF2\n",
-    "import tempfile\n",
-    "import os\n",
-    "\n",
-    "app = FastAPI()\n",
-    "\n",
-    "app.add_middleware(\n",
-    "    CORSMiddleware,\n",
-    "    allow_origins=[\"*\"],\n",
-    "    allow_credentials=True,\n",
-    "    allow_methods=[\"*\"],\n",
-    "    allow_headers=[\"*\"],\n",
-    ")\n",
-    "\n",
-    "def extract_text(file: UploadFile):\n",
-    "    if file.filename.endswith(\".pdf\"):\n",
-    "        pdf_reader = PyPDF2.PdfReader(file.file)\n",
-    "        text = \" \".join([\n",
-    "            page.extract_text() for page in pdf_reader.pages\n",
-    "            if page.extract_text()\n",
-    "        ])\n",
-    "    elif file.filename.endswith(\".docx\"):\n",
-    "        file.file.seek(0)\n",
-    "        temp = tempfile.NamedTemporaryFile(delete=False, suffix=\".docx\")\n",
-    "        temp.write(file.file.read())\n",
-    "        temp.close()\n",
-    "        text = docx2txt.process(temp.name)\n",
-    "        os.unlink(temp.name)\n",
-    "    else:\n",
-    "        text = \"\"\n",
-    "    return text\n",
-    "\n",
-    "def calculate_ats_score(text: str) -> int:\n",
-    "    score = 0\n",
-    "    keywords = [\n",
-    "        \"experience\", \"skills\", \"education\", \"summary\", \"achievements\",\n",
-    "        \"projects\"\n",
-    "    ]\n",
-    "    for word in keywords:\n",
-    "        if word in text.lower():\n",
-    "            score += 15\n",
-    "    return min(score, 100)\n",
-    "\n",
-    "@app.post(\"/upload-resume/\")\n",
-    "async def upload_resume(file: UploadFile = File(...)):\n",
-    "    file.file.seek(0)\n",
-    "    text = extract_text(file)\n",
-    "\n",
-    "    if not text:\n",
-    "        return {\"error\": \"Could not read file.\"}\n",
-    "\n",
-    "    score = calculate_ats_score(text)\n",
-    "    return {\"ats_score\": score}\n",
-    "\n",
-    "@app.get(\"/\")\n",
-    "def read_root():\n",
-    "    return {\"message\": \"Welcome to ATS Resume Checker\"}\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    import uvicorn\n",
-    "    uvicorn.run(\"main:app\", host=\"0.0.0.0\", port=8000)\n"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python 3 (ipykernel)",
-   "language": "python",
-   "name": "python3"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.10.9"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+import docx2txt
+import PyPDF2
+import tempfile
+import os
+
+# ✅ FastAPI app instance (MUST be at top level)
+app = FastAPI()
+
+# ✅ CORS setup to allow frontend access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins (adjust as needed)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ✅ Extract text from PDF or DOCX
+def extract_text(file: UploadFile):
+    if file.filename.endswith(".pdf"):
+        pdf_reader = PyPDF2.PdfReader(file.file)
+        text = " ".join([
+            page.extract_text() for page in pdf_reader.pages
+            if page.extract_text()
+        ])
+    elif file.filename.endswith(".docx"):
+        file.file.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        text = docx2txt.process(tmp_path)
+        os.unlink(tmp_path)
+    else:
+        text = ""
+    return text
+
+# ✅ Calculate ATS Score
+def calculate_ats_score(text: str) -> int:
+    score = 0
+    keywords = [
+        "experience", "skills", "education", "summary", "achievements", "projects"
+    ]
+    for word in keywords:
+        if word in text.lower():
+            score += 15
+    return min(score, 100)
+
+# ✅ Resume Upload Endpoint
+@app.post("/upload-resume/")
+async def upload_resume(file: UploadFile = File(...)):
+    print("📄 File received:", file.filename)
+    file.file.seek(0)
+    text = extract_text(file)
+    print("📝 Extracted text:", text)
+
+    if not text:
+        return {"error": "Could not read file."}
+
+    score = calculate_ats_score(text)
+    return {"ats_score": score}
+
+# ✅ Optional root route
+@app.get("/")
+def root():
+    return {"message": "ATS Resume Score API is running."}
