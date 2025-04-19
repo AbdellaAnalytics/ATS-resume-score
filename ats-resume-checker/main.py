@@ -14,11 +14,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ قائمة كلمات مفتاحية أساسية وشاملة
+# ✅ موسعة الكلمات المفتاحية لجميع الوظائف
 KEYWORDS = [
-    "excel", "python", "sql", "data", "analysis", "reporting", "power bi",
-    "dashboard", "communication", "teamwork", "problem solving", "project management",
-    "presentation", "budget", "forecast", "insights", "business", "analytics"
+    # Data
+    "excel", "python", "sql", "data", "analysis", "analytics", "reporting", "insights", "forecasting",
+    "power bi", "tableau", "dashboard", "visualization", "statistics", "regression", "data mining",
+    # Marketing
+    "seo", "google ads", "facebook ads", "branding", "campaign", "content", "digital marketing",
+    "email marketing", "instagram", "marketing strategy", "analytics", "a/b testing", "keyword research",
+    # Accounting
+    "invoice", "quickbooks", "erp", "reconciliation", "tax", "vat", "ledger", "balance sheet",
+    "accounts payable", "accounts receivable", "bookkeeping", "financial statement", "journal entries",
+    # HR
+    "recruitment", "onboarding", "payroll", "hr policies", "employee engagement", "training", "labor law",
+    "talent acquisition", "compliance", "benefits", "performance review",
+    # Sales & Customer
+    "sales", "crm", "cold calling", "closing deals", "upselling", "b2b", "b2c", "pipeline", "negotiation",
+    "customer service", "customer satisfaction", "inbound", "outbound", "zendesk", "ticketing",
+    # Software Dev
+    "java", "c++", "html", "css", "javascript", "react", "node.js", "django", "flask", "api", "git", "github",
+    "unit testing", "oop", "agile", "scrum", "docker", "linux", "ci/cd",
+    # Project Management
+    "project management", "pmp", "scrum", "kanban", "jira", "trello", "timeline", "stakeholders", "budget",
+    # General
+    "teamwork", "communication", "problem solving", "leadership", "multitasking", "presentation",
+    "attention to detail", "time management", "adaptability"
 ]
 
 def extract_text_from_pdf(file_data):
