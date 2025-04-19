@@ -1,29 +1,28 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from docx import Document
 from PyPDF2 import PdfReader
+import docx2txt
 import json
-import os
+import io
 
 app = FastAPI()
 
-# Enable CORS
+# السماح للفرونت إند بالتواصل مع الباك إند
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load all keywords from keywords.json
-with open("keywords.json", "r", encoding="utf-8") as file:
-    KEYWORDS = json.load(file)
+# تحميل الكلمات المفتاحية من ملف JSON
+with open("keywords.json", "r", encoding="utf-8") as f:
+    KEYWORDS = json.load(f)
 
-# Helper function to extract text from PDF
-def extract_text_from_pdf(file):
+# استخراج النص من ملف PDF
+def extract_text_from_pdf(file_data):
     try:
-        reader = PdfReader(file)
+        reader = PdfReader(io.BytesIO(file_data))
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
@@ -31,55 +30,46 @@ def extract_text_from_pdf(file):
     except Exception as e:
         return ""
 
-# Helper function to extract text from DOCX
-def extract_text_from_docx(file):
+# استخراج النص من ملف DOCX
+def extract_text_from_docx(file_data):
     try:
-        doc = Document(file)
-        return " ".join([para.text for para in doc.paragraphs])
+        with open("temp_uploaded.docx", "wb") as f:
+            f.write(file_data)
+        return docx2txt.process("temp_uploaded.docx")
     except Exception as e:
         return ""
 
-# Score calculation
+# حساب السكور من النص
 def calculate_score(text):
     text = text.lower()
-    found_keywords = set()
     total_keywords = 0
+    matched_keywords = 0
 
     for category in KEYWORDS:
-        keywords = category.get("keywords", [])
-        total_keywords += len(keywords)
-        for keyword in keywords:
+        for keyword in KEYWORDS[category]:
+            total_keywords += 1
             if keyword.lower() in text:
-                found_keywords.add(keyword.lower())
+                matched_keywords += 1
 
     if total_keywords == 0:
         return 0
+    return int((matched_keywords / total_keywords) * 100)
 
-    score = round((len(found_keywords) / total_keywords) * 100)
-    return score
-
+# نقطة النهاية لتحليل السيرة الذاتية
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    contents = await file.read()
-    extension = os.path.splitext(file.filename)[1].lower()
+    file_data = await file.read()
+    file_ext = file.filename.split(".")[-1].lower()
 
-    if extension == ".pdf":
-        with open("temp.pdf", "wb") as f:
-            f.write(contents)
-        text = extract_text_from_pdf("temp.pdf")
-        os.remove("temp.pdf")
-
-    elif extension == ".docx":
-        with open("temp.docx", "wb") as f:
-            f.write(contents)
-        text = extract_text_from_docx("temp.docx")
-        os.remove("temp.docx")
-
+    if file_ext == "pdf":
+        text = extract_text_from_pdf(file_data)
+    elif file_ext in ["docx", "doc"]:
+        text = extract_text_from_docx(file_data)
     else:
-        return {"error": "Unsupported file format. Please upload a PDF or DOCX file."}
+        return {"error": "Unsupported file format"}
 
-    if not text.strip():
-        return {"error": "Could not extract text from the resume. Make sure the file is not scanned or empty."}
+    if not text or len(text.strip()) < 20:
+        return {"error": "Failed to extract content. File might be empty or unreadable."}
 
-    score = calculate_score(text)
-    return {"ats_score": score}
+    ats_score = calculate_score(text)
+    return {"ats_score": ats_score}
