@@ -1,69 +1,80 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
-import docx2txt
+from docx import Document
 import pdfplumber
-import os
+import datetime
 import requests
-from datetime import datetime
+import traceback
 
 app = FastAPI()
 
-# CORS settings
+# Allow cross-origin for frontend (WordPress)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust if needed
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Dummy scoring logic
+GOOGLE_SHEET_ENDPOINT = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
+
+def extract_text_from_docx(file):
+    doc = Document(file)
+    return "\n".join([para.text for para in doc.paragraphs])
+
+def extract_text_from_pdf(file):
+    with pdfplumber.open(file) as pdf:
+        return "\n".join(page.extract_text() or '' for page in pdf.pages)
+
 def calculate_ats_score(text):
-    return min(100, int(len(text.strip()) / 30))  # Rough estimate
+    score = 0
+    keywords = ["python", "sql", "excel", "data", "analysis", "power bi", "tableau", "machine learning"]
+    score += sum(1 for kw in keywords if kw.lower() in text.lower()) * 10
+    return min(score, 100)
+
+def log_to_google_sheets(name, score):
+    try:
+        requests.post(GOOGLE_SHEET_ENDPOINT, data={
+            "filename": name,
+            "score": score,
+            "timestamp": datetime.datetime.now().isoformat()
+        })
+    except Exception as e:
+        print("⚠️ Failed to log to Google Sheets:", str(e))
+
 
 @app.post("/upload-resume/")
-async def upload_resume(file: UploadFile = File(...)):
+async def analyze_resume(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
         filename = file.filename.lower()
+        contents = await file.read()
 
-        # Save uploaded file temporarily
-        with open("temp_file", "wb") as f:
-            f.write(contents)
-
-        # Extract text
+        # Determine file type
         if filename.endswith(".docx"):
-            text = docx2txt.process("temp_file")
+            with open("temp.docx", "wb") as f:
+                f.write(contents)
+            text = extract_text_from_docx("temp.docx")
+
         elif filename.endswith(".pdf"):
-            text = ""
-            with pdfplumber.open("temp_file") as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
+            with open("temp.pdf", "wb") as f:
+                f.write(contents)
+            text = extract_text_from_pdf("temp.pdf")
+
         else:
-            os.remove("temp_file")
             return JSONResponse(status_code=400, content={"error": "Unsupported file format"})
 
-        os.remove("temp_file")
-
         score = calculate_ats_score(text)
+        print(f"✅ ATS Score: {score}")
 
-        # Send to Google Sheets
-        try:
-            response = requests.post(
-                "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec",
-                json={
-                    "filename": file.filename,
-                    "score": score,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-            )
-            print("Logged to Google Sheets:", response.status_code)
-        except Exception as log_error:
-            print("❌ Failed to log to Google Sheets:", log_error)
+        # Log upload
+        log_to_google_sheets(file.filename, score)
 
         return {"score": score}
 
     except Exception as e:
-        print("❌ Resume analysis error:", e)
-        return JSONResponse(status_code=500, content={"error": "Failed to analyze resume. Please try again."})
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Unexpected error: {str(e)}"}
+        )
