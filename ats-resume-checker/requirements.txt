@@ -1,6 +1,7 @@
 fastapi
 uvicorn
+python-multipart
 pdfplumber
 python-docx
-python-multipart
-requests
+gspread
+oauth2client
