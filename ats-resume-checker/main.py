@@ -1,67 +1,64 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import docx2txt
-import PyPDF2
+import pdfplumber
 import tempfile
 import os
 
-# ✅ FastAPI app instance (MUST be at top level)
 app = FastAPI()
 
-# ✅ CORS setup to allow frontend access
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (adjust as needed)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Extract text from PDF or DOCX
-def extract_text(file: UploadFile):
-    if file.filename.endswith(".pdf"):
-        pdf_reader = PyPDF2.PdfReader(file.file)
-        text = " ".join([
-            page.extract_text() for page in pdf_reader.pages
-            if page.extract_text()
-        ])
-    elif file.filename.endswith(".docx"):
-        file.file.seek(0)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            tmp.write(file.file.read())
-            tmp_path = tmp.name
-        text = docx2txt.process(tmp_path)
-        os.unlink(tmp_path)
-    else:
-        text = ""
+# Keywords in English and Arabic
+keywords = [
+    "Python", "SQL", "Excel", "Power BI", "data analysis", "communication",
+    "بايثون", "إكسل", "تحليل البيانات", "تنسيق", "مهارات التواصل", "باور بي آي"
+]
+
+def extract_text_from_docx(file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+        tmp.write(file.file.read())
+        tmp_path = tmp.name
+    text = docx2txt.process(tmp_path)
+    os.remove(tmp_path)
     return text
 
-# ✅ Calculate ATS Score
-def calculate_ats_score(text: str) -> int:
-    score = 0
-    keywords = [
-        "experience", "skills", "education", "summary", "achievements", "projects"
-    ]
-    for word in keywords:
-        if word in text.lower():
-            score += 15
-    return min(score, 100)
+def extract_text_from_pdf(file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(file.file.read())
+        tmp_path = tmp.name
+    text = ""
+    with pdfplumber.open(tmp_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    os.remove(tmp_path)
+    return text
 
-# ✅ Resume Upload Endpoint
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    print("📄 File received:", file.filename)
-    file.file.seek(0)
-    text = extract_text(file)
-    print("📝 Extracted text:", text)
+    try:
+        filename = file.filename.lower()
+        if filename.endswith(".docx"):
+            text = extract_text_from_docx(file)
+        elif filename.endswith(".pdf"):
+            text = extract_text_from_pdf(file)
+        else:
+            return {"error": "Unsupported file format. Please upload a .pdf or .docx file."}
 
-    if not text:
-        return {"error": "Could not read file."}
+        text = text.lower()
+        score = sum(1 for word in keywords if word.lower() in text)
+        ats_score = int((score / len(keywords)) * 100)
 
-    score = calculate_ats_score(text)
-    return {"ats_score": score}
+        return {"ats_score": ats_score}
 
-# ✅ Optional root route
-@app.get("/")
-def root():
-    return {"message": "ATS Resume Score API is running."}
+    except Exception as e:
+        return {"error": str(e)}
