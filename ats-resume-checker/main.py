@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PyPDF2 import PdfReader
 import docx2txt
 import io
+import difflib
 
 app = FastAPI()
 
@@ -14,33 +15,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ موسعة الكلمات المفتاحية لجميع الوظائف
+# 🔍 كلمات مفتاحية موسعة لجميع التخصصات
 KEYWORDS = [
-    # Data
-    "excel", "python", "sql", "data", "analysis", "analytics", "reporting", "insights", "forecasting",
-    "power bi", "tableau", "dashboard", "visualization", "statistics", "regression", "data mining",
-    # Marketing
-    "seo", "google ads", "facebook ads", "branding", "campaign", "content", "digital marketing",
-    "email marketing", "instagram", "marketing strategy", "analytics", "a/b testing", "keyword research",
-    # Accounting
-    "invoice", "quickbooks", "erp", "reconciliation", "tax", "vat", "ledger", "balance sheet",
-    "accounts payable", "accounts receivable", "bookkeeping", "financial statement", "journal entries",
-    # HR
-    "recruitment", "onboarding", "payroll", "hr policies", "employee engagement", "training", "labor law",
-    "talent acquisition", "compliance", "benefits", "performance review",
-    # Sales & Customer
-    "sales", "crm", "cold calling", "closing deals", "upselling", "b2b", "b2c", "pipeline", "negotiation",
-    "customer service", "customer satisfaction", "inbound", "outbound", "zendesk", "ticketing",
-    # Software Dev
-    "java", "c++", "html", "css", "javascript", "react", "node.js", "django", "flask", "api", "git", "github",
-    "unit testing", "oop", "agile", "scrum", "docker", "linux", "ci/cd",
-    # Project Management
-    "project management", "pmp", "scrum", "kanban", "jira", "trello", "timeline", "stakeholders", "budget",
-    # General
-    "teamwork", "communication", "problem solving", "leadership", "multitasking", "presentation",
-    "attention to detail", "time management", "adaptability"
+    "excel", "python", "sql", "data analysis", "power bi", "tableau", "dashboard",
+    "seo", "google ads", "facebook ads", "branding", "campaign", "email marketing",
+    "invoice", "quickbooks", "erp", "reconciliation", "tax", "vat", "ledger",
+    "recruitment", "payroll", "employee engagement", "training", "labor law",
+    "sales", "crm", "cold calling", "upselling", "b2b", "b2c", "pipeline",
+    "customer service", "ticketing", "zendesk", "support", "call center",
+    "java", "c++", "html", "css", "javascript", "react", "node.js", "api", "git",
+    "project management", "scrum", "kanban", "jira", "trello",
+    "teamwork", "communication", "problem solving", "leadership", "multitasking",
+    "attention to detail", "adaptability", "presentation", "strategy"
 ]
 
+# استخلاص النص من PDF
 def extract_text_from_pdf(file_data):
     try:
         reader = PdfReader(file_data)
@@ -48,17 +37,26 @@ def extract_text_from_pdf(file_data):
     except Exception:
         return ""
 
+# استخلاص النص من DOCX
 def extract_text_from_docx(file_data):
     try:
         return docx2txt.process(file_data)
     except Exception:
         return ""
 
-def calculate_ats_score(resume_text):
-    resume_text = resume_text.lower()
-    matched_keywords = sum(1 for keyword in KEYWORDS if keyword in resume_text)
-    score = (matched_keywords / len(KEYWORDS)) * 100
-    return round(score)
+# حساب السكور بالذكاء باستخدام مطابقة تقريبية
+def calculate_ats_score(text, threshold=0.85):
+    text = text.lower()
+    words = set(text.split())
+    matched_keywords = []
+
+    for keyword in KEYWORDS:
+        matches = difflib.get_close_matches(keyword, words, n=1, cutoff=threshold)
+        if matches:
+            matched_keywords.append(keyword)
+
+    score = (len(matched_keywords) / len(KEYWORDS)) * 100
+    return round(score), matched_keywords
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
@@ -78,7 +76,11 @@ async def upload_resume(file: UploadFile = File(...)):
         if not resume_text.strip():
             return {"error": "Failed to extract text from resume."}
 
-        ats_score = calculate_ats_score(resume_text)
-        return {"ats_score": ats_score}
+        score, matched = calculate_ats_score(resume_text)
+        return {
+            "ats_score": score,
+            "matched_keywords": matched,
+            "total_keywords": len(KEYWORDS)
+        }
     except Exception:
         return {"error": "Something went wrong while processing the resume."}
