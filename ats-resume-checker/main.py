@@ -1,86 +1,69 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 import docx2txt
-import PyPDF2
-import tempfile
+import pdfplumber
 import os
 import requests
 from datetime import datetime
 
 app = FastAPI()
 
+# CORS settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Adjust if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Your Google Apps Script webhook
-GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec"
-
-def extract_text(file: UploadFile):
-    try:
-        if file.filename.endswith(".pdf"):
-            pdf_reader = PyPDF2.PdfReader(file.file)
-            text = " ".join([
-                page.extract_text() for page in pdf_reader.pages
-                if page.extract_text()
-            ])
-        elif file.filename.endswith(".docx"):
-            file.file.seek(0)
-            temp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-            temp.write(file.file.read())
-            temp.close()
-            text = docx2txt.process(temp.name)
-            os.unlink(temp.name)
-        else:
-            text = ""
-    except Exception as e:
-        print("❌ Error reading file:", e)
-        text = ""
-    return text
-
-def calculate_ats_score(text: str) -> int:
-    score = 0
-    keywords = [
-        "experience", "skills", "education", "summary", "achievements", "projects"
-    ]
-    for word in keywords:
-        if word in text.lower():
-            score += 15
-    return min(score, 100)
-
-def log_to_google_sheets(name: str, score: int):
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        data = {
-            "name": name,
-            "score": score,
-            "timestamp": timestamp
-        }
-        response = requests.post(GOOGLE_SHEET_WEBHOOK_URL, json=data)
-        print("✅ Logged to Google Sheets:", response.status_code)
-    except Exception as e:
-        print("⚠️ Failed to log to Google Sheets:", e)
+# Dummy scoring logic
+def calculate_ats_score(text):
+    return min(100, int(len(text.strip()) / 30))  # Rough estimate
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    print("📩 Received file:", file.filename)
-    file.file.seek(0)
+    try:
+        contents = await file.read()
+        filename = file.filename.lower()
 
-    text = extract_text(file)
-    print("📝 Extracted text length:", len(text))
+        # Save uploaded file temporarily
+        with open("temp_file", "wb") as f:
+            f.write(contents)
 
-    if not text:
-        return {"error": "Could not extract text from the resume."}
+        # Extract text
+        if filename.endswith(".docx"):
+            text = docx2txt.process("temp_file")
+        elif filename.endswith(".pdf"):
+            text = ""
+            with pdfplumber.open("temp_file") as pdf:
+                for page in pdf.pages:
+                    text += page.extract_text() or ""
+        else:
+            os.remove("temp_file")
+            return JSONResponse(status_code=400, content={"error": "Unsupported file format"})
 
-    score = calculate_ats_score(text)
-    log_to_google_sheets(file.filename, score)
+        os.remove("temp_file")
 
-    return {"ats_score": score}
+        score = calculate_ats_score(text)
 
-@app.get("/")
-def read_root():
-    return {"message": "ATS Resume Score API is running."}
+        # Send to Google Sheets
+        try:
+            response = requests.post(
+                "https://script.google.com/macros/s/AKfycbxbSbii1A86bMyvCdMLzOOAY8YND-XAxhFmoNg3OpVCt09-VTnCu_sPkDvNvCKgFc85/exec",
+                json={
+                    "filename": file.filename,
+                    "score": score,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+            )
+            print("Logged to Google Sheets:", response.status_code)
+        except Exception as log_error:
+            print("❌ Failed to log to Google Sheets:", log_error)
+
+        return {"score": score}
+
+    except Exception as e:
+        print("❌ Resume analysis error:", e)
+        return JSONResponse(status_code=500, content={"error": "Failed to analyze resume. Please try again."})
