@@ -7,3 +7,4 @@ openai
 python-dotenv
 openai>=1.2.0
 python-docx
+pip install openai
