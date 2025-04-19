@@ -4,6 +4,7 @@ from PyPDF2 import PdfReader
 import docx2txt
 import io
 import difflib
+import re
 
 app = FastAPI()
 
@@ -29,6 +30,12 @@ KEYWORDS = [
     "attention to detail", "adaptability", "presentation", "strategy"
 ]
 
+# Normalize words by removing punctuation and lowercasing
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)  # remove punctuation
+    return text
+
 # استخلاص النص من PDF
 def extract_text_from_pdf(file_data):
     try:
@@ -44,14 +51,15 @@ def extract_text_from_docx(file_data):
     except Exception:
         return ""
 
-# حساب السكور بالذكاء باستخدام مطابقة تقريبية
-def calculate_ats_score(text, threshold=0.85):
-    text = text.lower()
+# حساب السكور بالذكاء باستخدام مطابقة تقريبية وتطبيع
+def calculate_ats_score(text, threshold=0.8):
+    text = normalize(text)
     words = set(text.split())
     matched_keywords = []
 
     for keyword in KEYWORDS:
-        matches = difflib.get_close_matches(keyword, words, n=1, cutoff=threshold)
+        keyword_norm = normalize(keyword)
+        matches = difflib.get_close_matches(keyword_norm, words, n=1, cutoff=threshold)
         if matches:
             matched_keywords.append(keyword)
 
@@ -75,6 +83,10 @@ async def upload_resume(file: UploadFile = File(...)):
 
         if not resume_text.strip():
             return {"error": "Failed to extract text from resume."}
+
+        print("\n--- Extracted Text Preview (First 1000 characters) ---\n")
+        print(resume_text[:1000])
+        print("\n------------------------------------------------------\n")
 
         score, matched = calculate_ats_score(resume_text)
         return {
