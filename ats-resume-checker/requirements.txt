@@ -1,10 +1,7 @@
 fastapi
 uvicorn
-PyPDF2
-python-docx
 python-multipart
+PyPDF2
 docx2txt
-pdfplumber
-langdetect
-PyMuPDF
-aiofiles
+openai
+python-dotenv
