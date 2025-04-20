@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -49,23 +48,4 @@ def calculate_score(text):
 async def upload_resume(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        if file.filename.endswith(".pdf"):
-            resume_text = extract_text_from_pdf(contents)
-        elif file.filename.endswith(".docx"):
-            resume_text = extract_text_from_docx(contents)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format")
-
-        if not resume_text.strip():
-            raise HTTPException(status_code=400, detail="Empty resume content")
-
-        result = calculate_score(resume_text)
-        return JSONResponse(content={"status": "success", "analysis": result})
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+        if file.filename.endswith(".pdf
