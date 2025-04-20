@@ -1,51 +1,67 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
-from docx import Document
+import docx2txt
 import PyPDF2
-from io import BytesIO
+import tempfile
 import os
 
+# ✅ FastAPI app instance (MUST be at top level)
 app = FastAPI()
 
+# ✅ CORS setup to allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins (adjust as needed)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def extract_text_from_pdf(file_data):
-    try:
-        reader = PyPDF2.PdfReader(BytesIO(file_data))
+# ✅ Extract text from PDF or DOCX
+def extract_text(file: UploadFile):
+    if file.filename.endswith(".pdf"):
+        pdf_reader = PyPDF2.PdfReader(file.file)
+        text = " ".join([
+            page.extract_text() for page in pdf_reader.pages
+            if page.extract_text()
+        ])
+    elif file.filename.endswith(".docx"):
+        file.file.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(file.file.read())
+            tmp_path = tmp.name
+        text = docx2txt.process(tmp_path)
+        os.unlink(tmp_path)
+    else:
         text = ""
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-        return text.strip()
-    except Exception as e:
-        raise Exception("PDF extraction failed: " + str(e))
+    return text
 
-def extract_text_from_docx(file_data):
-    try:
-        doc = Document(BytesIO(file_data))
-        text = "\n".join([para.text for para in doc.paragraphs])
-        return text.strip()
-    except Exception as e:
-        raise Exception("DOCX extraction failed: " + str(e))
-
-def calculate_score(text):
+# ✅ Calculate ATS Score
+def calculate_ats_score(text: str) -> int:
+    score = 0
     keywords = [
-        "python", "excel", "sql", "data", "project", "kpi", "power bi",
-        "report", "analysis", "dashboard", "communication", "presentation"
+        "experience", "skills", "education", "summary", "achievements", "projects"
     ]
-    text_lower = text.lower()
-    found = sum(text_lower.count(kw) for kw in keywords)
-    score = min(100, 40 + found * 5)
-    return f"✅ Resume scanned successfully.\n📌 Keywords matched: {found}\n📊 Estimated ATS Score: {score}%."
+    for word in keywords:
+        if word in text.lower():
+            score += 15
+    return min(score, 100)
 
+# ✅ Resume Upload Endpoint
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        if file.filename.endswith(".pdf
+    print("📄 File received:", file.filename)
+    file.file.seek(0)
+    text = extract_text(file)
+    print("📝 Extracted text:", text)
+
+    if not text:
+        return {"error": "Could not read file."}
+
+    score = calculate_ats_score(text)
+    return {"ats_score": score}
+
+# ✅ Optional root route
+@app.get("/")
+def root():
+    return {"message": "ATS Resume Score API is running."}
