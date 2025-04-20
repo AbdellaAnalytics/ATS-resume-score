@@ -1,7 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-import os
 from docx import Document
 import PyPDF2
 from io import BytesIO
@@ -31,14 +30,17 @@ def extract_text_from_docx(file_data):
     text = "\n".join([para.text for para in doc.paragraphs])
     return text.strip()
 
-# ✅ مؤقتًا من غير GPT
+# 💡 الرد التجريبي – بدون GPT
 def analyze_with_gpt(resume_text, job_description):
     return f"""
-    ✅ TEST MODE: GPT NOT CONNECTED
-    Resume Length: {len(resume_text)} characters
-    Job Description Length: {len(job_description)} characters
-    This confirms the backend is working.
-    """
+✅ TEST MODE (No GPT)
+
+📝 Resume Characters: {len(resume_text)}
+📋 Job Description Characters: {len(job_description)}
+
+📊 Analysis:
+This is just a test response to confirm the frontend and backend are connected and working.
+"""
 
 @app.post("/upload-resume/")
 async def upload_resume(
@@ -46,26 +48,3 @@ async def upload_resume(
     job_description: str = Form(...)
 ):
     try:
-        contents = await file.read()
-        if file.filename.endswith(".pdf"):
-            resume_text = extract_text_from_pdf(contents)
-        elif file.filename.endswith(".docx"):
-            resume_text = extract_text_from_docx(contents)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format")
-
-        if not resume_text.strip():
-            raise HTTPException(status_code=400, detail="Empty resume content")
-
-        if not job_description.strip():
-            raise HTTPException(status_code=400, detail="Job description is missing")
-
-        gpt_result = analyze_with_gpt(resume_text, job_description)
-
-        return JSONResponse(content={
-            "status": "success",
-            "analysis": gpt_result
-        })
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
