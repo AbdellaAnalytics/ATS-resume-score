@@ -1,68 +1,82 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import docx2txt
-from PyPDF2 import PdfReader
+from starlette.responses import JSONResponse
 import openai
-from tempfile import NamedTemporaryFile
+import os
+from docx import Document
+import PyPDF2
+from io import BytesIO
 
-# OpenAI API Key from environment variable
+# ربط GPT
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
-# CORS
+# السماح بالوصول من أي مصدر (تقدر تحدد دومين معين لاحقًا)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-def extract_text_from_file(file: UploadFile) -> str:
-    if file.filename.endswith(".pdf"):
-        reader = PdfReader(file.file)
-        return " ".join(page.extract_text() for page in reader.pages if page.extract_text())
-    elif file.filename.endswith(".docx"):
-        with NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            tmp.write(file.file.read())
-            tmp_path = tmp.name
-        return docx2txt.process(tmp_path)
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported file type.")
+def extract_text_from_pdf(file_data):
+    reader = PyPDF2.PdfReader(BytesIO(file_data))
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text.strip()
 
-def get_gpt_analysis(text: str) -> dict:
+def extract_text_from_docx(file_data):
+    doc = Document(BytesIO(file_data))
+    text = "\n".join([para.text for para in doc.paragraphs])
+    return text.strip()
+
+def analyze_with_gpt(resume_text, job_description):
     prompt = f"""
-You are an expert ATS (Applicant Tracking System) resume evaluator.
+    Act like a professional ATS system.
+    Compare this resume with the job description.
+    Give:
+    - Match percentage
+    - Missing skills
+    - One-line summary
 
-Analyze the following resume and provide:
-1. ATS Score (out of 100)
-2. Short Summary
-3. Strengths
-4. Weak Points
-5. Recommendations to improve
+    Resume:
+    {resume_text}
 
-Resume Content:
-{text[:3000]}
-"""
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful resume analyst."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
-        )
-        return {"gpt_analysis": response.choices[0].message.content}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GPT analysis failed: {str(e)}")
+    Job Description:
+    {job_description}
+    """
+
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+
+    return response.choices[0].message.content.strip()
 
 @app.post("/upload-resume/")
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), job_description: str = ""):
     try:
-        resume_text = extract_text_from_file(file)
-        gpt_response = get_gpt_analysis(resume_text)
-        return gpt_response
+        contents = await file.read()
+        if file.filename.endswith(".pdf"):
+            resume_text = extract_text_from_pdf(contents)
+        elif file.filename.endswith(".docx"):
+            resume_text = extract_text_from_docx(contents)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format")
+
+        if not job_description:
+            raise HTTPException(status_code=400, detail="Job description is required")
+
+        gpt_result = analyze_with_gpt(resume_text, job_description)
+
+        return JSONResponse(content={
+            "status": "success",
+            "analysis": gpt_result
+        })
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
