@@ -39,36 +39,37 @@ def calculate_advanced_score(text: str) -> int:
     text_lower = text.lower()
     score = 0
 
-    # Section coverage
+    # Sections
     sections = ["experience", "education", "skills", "projects", "certifications", "summary", "objective"]
-    section_matches = sum(1 for section in sections if section in text_lower)
-    score += section_matches * 5  # 5 points per section
+    matched_sections = sum(1 for section in sections if section in text_lower)
+    score += matched_sections * 5  # Max 35
 
-    # Experience patterns
-    if re.search(r"(\d+\s+years|\bsince\s+\d{4})", text_lower):
+    # Experience
+    if re.search(r"(\d+\s+years|since\s+\d{4})", text_lower):
         score += 10
 
-    # Technical keywords density
+    # Tech keywords
     tech_keywords = ["python", "excel", "sql", "power bi", "tableau", "html", "css", "javascript", "sap", "erp"]
     tech_matches = sum(1 for word in tech_keywords if word in text_lower)
-    score += tech_matches * 3
+    score += min(tech_matches * 2, 30)
 
-    # Word count influence
+    # Word count
     word_count = len(text.split())
-    if 400 <= word_count <= 1000:
+    if 300 <= word_count <= 1200:
         score += 10
-    elif word_count > 1000:
-        score += 5  # bonus for longer detailed resumes
+    elif word_count > 1200:
+        score += 5
 
     # Formatting
     bullet_points = len(re.findall(r"[-•\u2022]", text))
-    numbers = len(re.findall(r"\b\d{4}\b|\d+\syears", text_lower))
-    if bullet_points >= 5:
-        score += 10
-    if numbers >= 3:
+    if bullet_points >= 3:
         score += 5
 
-    return round(score)
+    numbers = len(re.findall(r"\b\d{4}\b|\d+\syears", text_lower))
+    if numbers >= 2:
+        score += 5
+
+    return min(round(score), 100)
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
@@ -81,10 +82,8 @@ async def upload_resume(file: UploadFile = File(...)):
         return {"error": "Could not read file."}
 
     score = calculate_advanced_score(text)
-    return {
-        "ats_score": score
-    }
+    return {"ats_score": score}
 
 @app.get("/")
 def root():
-    return {"message": "Flexible ATS Resume Score API is running."}
+    return {"message": "Smart ATS Resume Score API is running."}
