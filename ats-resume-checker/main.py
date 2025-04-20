@@ -31,14 +31,17 @@ def extract_text_from_docx(file_data):
     return text.strip()
 
 def analyze_with_gpt(resume_text, job_description):
+    print("📥 analyze_with_gpt() called")
+    print(f"Resume length: {len(resume_text)}")
+    print(f"Job desc length: {len(job_description)}")
+
     return f"""
-✅ TEST MODE (No GPT)
+✅ TEST MODE ACTIVE
 
-📝 Resume Characters: {len(resume_text)}
-📋 Job Description Characters: {len(job_description)}
+📝 Resume characters: {len(resume_text)}
+📋 Job description characters: {len(job_description)}
 
-📊 Analysis:
-This is just a test response to confirm the frontend and backend are connected and working.
+🧪 Status: Frontend and backend are connected.
 """
 
 @app.post("/upload-resume/")
@@ -47,7 +50,9 @@ async def upload_resume(
     job_description: str = Form(...)
 ):
     try:
+        print("📩 Received request on /upload-resume/")
         contents = await file.read()
+
         if file.filename.endswith(".pdf"):
             resume_text = extract_text_from_pdf(contents)
         elif file.filename.endswith(".docx"):
@@ -55,18 +60,14 @@ async def upload_resume(
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format")
 
-        if not resume_text.strip():
-            raise HTTPException(status_code=400, detail="Empty resume content")
-
-        if not job_description.strip():
-            raise HTTPException(status_code=400, detail="Job description is missing")
-
         gpt_result = analyze_with_gpt(resume_text, job_description)
 
+        print("✅ Returning response to frontend...")
         return JSONResponse(content={
             "status": "success",
             "analysis": gpt_result
         })
 
     except Exception as e:
+        print("❌ Error occurred:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
