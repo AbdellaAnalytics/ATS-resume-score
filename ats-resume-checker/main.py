@@ -11,7 +11,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
-# ✅ السماح لموقعك يتواصل مع Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -60,10 +59,13 @@ def analyze_with_gpt(resume_text, job_description):
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
+            temperature=0.2,
+            timeout=20  # ⏰ مهم جدًا عشان تمنع الـ hang
         )
 
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        print("GPT Response:", result)
+        return result
     except Exception as e:
         raise Exception("GPT error: " + str(e))
 
@@ -95,4 +97,5 @@ async def upload_resume(
         })
 
     except Exception as e:
+        print("Server Error:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
