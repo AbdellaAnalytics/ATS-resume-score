@@ -1,13 +1,10 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-import openai
 import os
 from docx import Document
 import PyPDF2
 from io import BytesIO
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
@@ -23,51 +20,25 @@ app.add_middleware(
 )
 
 def extract_text_from_pdf(file_data):
-    try:
-        reader = PyPDF2.PdfReader(BytesIO(file_data))
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-        return text.strip()
-    except Exception as e:
-        raise Exception("Error reading PDF: " + str(e))
+    reader = PyPDF2.PdfReader(BytesIO(file_data))
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text.strip()
 
 def extract_text_from_docx(file_data):
-    try:
-        doc = Document(BytesIO(file_data))
-        text = "\n".join([para.text for para in doc.paragraphs])
-        return text.strip()
-    except Exception as e:
-        raise Exception("Error reading DOCX: " + str(e))
+    doc = Document(BytesIO(file_data))
+    text = "\n".join([para.text for para in doc.paragraphs])
+    return text.strip()
 
+# ✅ مؤقتًا من غير GPT
 def analyze_with_gpt(resume_text, job_description):
-    try:
-        prompt = f"""
-        You are an ATS system. Compare the resume with the job description.
-        Give:
-        - Match percentage
-        - Missing skills
-        - Summary
-
-        Resume:
-        {resume_text}
-
-        Job Description:
-        {job_description}
-        """
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            timeout=20  # ⏰ مهم جدًا عشان تمنع الـ hang
-        )
-
-        result = response.choices[0].message.content.strip()
-        print("GPT Response:", result)
-        return result
-    except Exception as e:
-        raise Exception("GPT error: " + str(e))
+    return f"""
+    ✅ TEST MODE: GPT NOT CONNECTED
+    Resume Length: {len(resume_text)} characters
+    Job Description Length: {len(job_description)} characters
+    This confirms the backend is working.
+    """
 
 @app.post("/upload-resume/")
 async def upload_resume(
@@ -97,5 +68,4 @@ async def upload_resume(
         })
 
     except Exception as e:
-        print("Server Error:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
