@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -17,26 +18,32 @@ app.add_middleware(
 )
 
 def extract_text_from_pdf(file_data):
-    reader = PyPDF2.PdfReader(BytesIO(file_data))
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() + "\n"
-    return text.strip()
+    try:
+        reader = PyPDF2.PdfReader(BytesIO(file_data))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip()
+    except Exception as e:
+        raise Exception("PDF extraction failed: " + str(e))
 
 def extract_text_from_docx(file_data):
-    doc = Document(BytesIO(file_data))
-    text = "\n".join([para.text for para in doc.paragraphs])
-    return text.strip()
+    try:
+        doc = Document(BytesIO(file_data))
+        text = "\n".join([para.text for para in doc.paragraphs])
+        return text.strip()
+    except Exception as e:
+        raise Exception("DOCX extraction failed: " + str(e))
 
-def generate_resume_score(resume_text):
-    length = len(resume_text)
-    keyword_count = sum(resume_text.lower().count(word) for word in [
-        "python", "excel", "sql", "data", "project", "kpi", "power bi", "report", "analysis", "dashboard"
-    ])
-    score = min(100, 40 + keyword_count * 6)
-    return f"""✅ Resume scanned.
-Keywords found: {keyword_count}
-Estimated ATS Score: {score}%"""
+def calculate_score(text):
+    keywords = [
+        "python", "excel", "sql", "data", "project", "kpi", "power bi",
+        "report", "analysis", "dashboard", "communication", "presentation"
+    ]
+    text_lower = text.lower()
+    found = sum(text_lower.count(kw) for kw in keywords)
+    score = min(100, 40 + found * 5)
+    return f"✅ Resume scanned successfully.\n📌 Keywords matched: {found}\n📊 Estimated ATS Score: {score}%."
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
@@ -52,12 +59,8 @@ async def upload_resume(file: UploadFile = File(...)):
         if not resume_text.strip():
             raise HTTPException(status_code=400, detail="Empty resume content")
 
-        result = generate_resume_score(resume_text)
-
-        return JSONResponse(content={
-            "status": "success",
-            "analysis": result
-        })
+        result = calculate_score(resume_text)
+        return JSONResponse(content={"status": "success", "analysis": result})
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
