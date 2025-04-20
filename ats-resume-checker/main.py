@@ -39,35 +39,36 @@ def calculate_advanced_score(text: str) -> int:
     text_lower = text.lower()
     score = 0
 
-    # Section keywords
+    # Section coverage
     sections = ["experience", "education", "skills", "projects", "certifications", "summary", "objective"]
     section_matches = sum(1 for section in sections if section in text_lower)
-    if section_matches >= 4:
-        score += 20
+    score += section_matches * 5  # 5 points per section
 
-    # Years of experience
+    # Experience patterns
     if re.search(r"(\d+\s+years|\bsince\s+\d{4})", text_lower):
-        score += 15
+        score += 10
 
-    # Technical keywords
+    # Technical keywords density
     tech_keywords = ["python", "excel", "sql", "power bi", "tableau", "html", "css", "javascript", "sap", "erp"]
     tech_matches = sum(1 for word in tech_keywords if word in text_lower)
-    if tech_matches >= 5:
-        score += 20
+    score += tech_matches * 3
 
-    # Resume length
+    # Word count influence
     word_count = len(text.split())
     if 400 <= word_count <= 1000:
-        score += 15
+        score += 10
+    elif word_count > 1000:
+        score += 5  # bonus for longer detailed resumes
 
-    # Formatting & bullet points
+    # Formatting
     bullet_points = len(re.findall(r"[-•\u2022]", text))
     numbers = len(re.findall(r"\b\d{4}\b|\d+\syears", text_lower))
-    if bullet_points >= 5 or numbers >= 3:
-        score += 20
+    if bullet_points >= 5:
+        score += 10
+    if numbers >= 3:
+        score += 5
 
-    # Max 90%
-    return min(score, 90)
+    return round(score)
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
@@ -86,4 +87,4 @@ async def upload_resume(file: UploadFile = File(...)):
 
 @app.get("/")
 def root():
-    return {"message": "Advanced ATS Resume Score API is running."}
+    return {"message": "Flexible ATS Resume Score API is running."}
