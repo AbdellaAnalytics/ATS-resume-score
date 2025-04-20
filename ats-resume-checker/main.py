@@ -9,16 +9,16 @@ import math
 
 app = FastAPI(title="Simple Resume Scorer", version="1.0")
 
+# ✅ CORS fix for production domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://bookmejob.com"],  # حدد دومينك هنا
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 def extract_text(file: UploadFile) -> str:
-    """Extract text from PDF or DOCX files"""
     try:
         if file.filename.endswith(".pdf"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -50,22 +50,18 @@ def extract_text(file: UploadFile) -> str:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 def calculate_score(text: str) -> int:
-    """Flexible scoring algorithm that gives reasonable scores"""
     text_lower = text.lower()
     
-    # Basic checks (0-40 points)
     basic_score = 0
     sections = ["experience", "education", "skills"]
     basic_score += sum(10 for section in sections if section in text_lower)
     
-    # Content quality (0-40 points)
     content_score = 0
     word_count = len(text.split())
     if word_count > 200:
-        content_score += 20  # Base points for having content
-        content_score += min((word_count - 200) // 20, 20)  # Up to 20 more points for length
+        content_score += 20
+        content_score += min((word_count - 200) // 20, 20)
     
-    # Keywords (0-20 points)
     keyword_score = 0
     common_keywords = [
         "experience", "education", "skills", "project", "work", 
@@ -74,18 +70,13 @@ def calculate_score(text: str) -> int:
     ]
     keyword_score = min(sum(1 for kw in common_keywords if kw in text_lower) * 2, 20)
     
-    # Combine scores with flexible weighting
     total_score = basic_score + content_score + keyword_score
-    
-    # Normalize to 40-90 range (avoiding extremes)
     normalized_score = 40 + (total_score * 0.5)
     
-    # Ensure score is within reasonable bounds
     return min(max(round(normalized_score), 40), 90)
 
 @app.post("/score/")
 async def score_resume(file: UploadFile = File(...)):
-    """Simplified scoring endpoint"""
     try:
         text = extract_text(file)
         if not text.strip():
