@@ -11,9 +11,13 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
+# ✅ السماح لموقعك يتواصل مع Render
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://bookmejob.com", 
+        "https://www.bookmejob.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
