@@ -1,3 +1,4 @@
+# main.py
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import docx2txt
@@ -6,15 +7,20 @@ import tempfile
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple
 import nltk
-from nltk.corpus import stopwords, wordnet
-from collections import Counter
-import difflib
+from nltk.corpus import stopwords
+from pydantic import BaseModel
 
-app = FastAPI(title="AI Resume Scorer Pro", version="5.0")
+# Initialize NLTK (safe download)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
 
-# Configure CORS
+app = FastAPI(title="Resume Scorer Pro", version="1.0")
+
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,197 +29,130 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize NLP resources
-nltk.download(['stopwords', 'wordnet', 'punkt'], quiet=True)
-STOPWORDS = set(stopwords.words('english'))
+# Response Model
+class AnalysisResult(BaseModel):
+    score: int
+    industry: str
+    strengths: List[str]
+    suggestions: List[str]
+    metrics: Dict[str, int]
 
-# Resume-specific constants
-MIN_RESUME_WORDS = 150
-RESUME_KEYPHRASES = {"work experience", "professional experience", "education", 
-                    "skills", "employment history", "career objective"}
+# Resume Validation
+MIN_RESUME_LENGTH = 100  # Minimum words to consider as valid resume
+RESUME_SECTIONS = {"experience", "education", "skills"}
 
-# Industry keywords with synonyms
-INDUSTRY_KEYWORDS = {
-    "tech": {
-        "primary": ["python", "java", "javascript", "c++", "sql"],
-        "synonyms": {
-            "python": ["python", "py", "django", "flask"],
-            "java": ["java", "jvm", "spring", "j2ee"],
-            "sql": ["sql", "mysql", "postgresql", "database"]
-        }
-    },
-    "business": {
-        "primary": ["management", "strategy", "leadership", "marketing"],
-        "synonyms": {
-            "management": ["management", "supervision", "administration"],
-            "marketing": ["marketing", "advertising", "branding"]
-        }
-    }
-}
-
-def is_resume(text: str) -> bool:
-    """Smart detection if document is actually a resume"""
-    text_lower = text.lower()
-    
-    # Check for resume-like structure
-    section_count = sum(1 for phrase in RESUME_KEYPHRASES if phrase in text_lower)
-    if section_count < 2:
+def validate_resume(text: str) -> bool:
+    """Check if text resembles a resume"""
+    word_count = len(text.split())
+    if word_count < MIN_RESUME_LENGTH:
         return False
     
-    # Check for personal information patterns
-    has_contact = (re.search(r"(phone|mobile|contact)", text_lower) and 
-                  re.search(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", text_lower))
-    
-    # Check for experience/education patterns
-    has_timeline = bool(re.search(r"(20\d{2}|'\d{2})\s*[-–—]\s*(20\d{2}|'\d{2}|present)", text_lower))
-    
-    return has_contact or has_timeline or (section_count >= 3)
+    text_lower = text.lower()
+    found_sections = sum(1 for section in RESUME_SECTIONS if section in text_lower)
+    return found_sections >= 2 or \
+           bool(re.search(r"\b(phone|email|contact)\b", text_lower))
 
-def get_synonyms(word: str) -> Set[str]:
-    """Get synonyms and similar words using WordNet and manual mappings"""
-    synonyms = set()
-    
-    # Get WordNet synonyms
-    for syn in wordnet.synsets(word):
-        for lemma in syn.lemmas():
-            synonyms.add(lemma.name().lower().replace('_', ' '))
-    
-    # Add from our manual synonym mappings
-    for industry in INDUSTRY_KEYWORDS.values():
-        if word in industry["synonyms"]:
-            synonyms.update(industry["synonyms"][word])
-    
-    # Add similar words using difflib
-    similar_words = difflib.get_close_matches(word, INDUSTRY_KEYWORDS.keys(), n=2)
-    synonyms.update(similar_words)
-    
-    return synonyms
-
+# Text Extraction
 def extract_text(file: UploadFile) -> str:
-    """Extract text with resume validation"""
+    """Safe text extraction from PDF/DOCX"""
     try:
-        if not file.filename.lower().endswith(('.pdf', '.docx')):
-            raise HTTPException(400, "Only PDF and DOCX files are supported")
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename[-5:]) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename[-4:]) as tmp:
             tmp.write(file.file.read())
             tmp_path = tmp.name
 
-        text = ""
-        if file.filename.endswith(".pdf"):
-            with open(tmp_path, "rb") as f:
+        if file.filename.lower().endswith('.pdf'):
+            with open(tmp_path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
-                text = " ".join([page.extract_text() or "" for page in reader.pages])
-        else:
+                text = " ".join(page.extract_text() or "" for page in reader.pages)
+        elif file.filename.lower().endswith(('.docx', '.doc')):
             text = docx2txt.process(tmp_path)
-        
-        os.unlink(tmp_path)
-        
-        if not is_resume(text):
-            raise HTTPException(400, "This doesn't appear to be a resume document")
+        else:
+            raise HTTPException(400, "Unsupported file type")
             
-        return text.lower().strip()
+        os.unlink(tmp_path)
+        return text.strip()
     
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(500, f"Error processing file: {str(e)}")
+        raise HTTPException(500, f"File processing error: {str(e)}")
 
-def analyze_content(text: str) -> Dict:
-    """Comprehensive resume analysis with smart scoring"""
-    # Section analysis
-    sections, missing_sections = analyze_sections(text)
+# Analysis Engine
+def analyze_resume(text: str) -> AnalysisResult:
+    """Core scoring logic"""
+    if not validate_resume(text):
+        raise HTTPException(400, "Document doesn't appear to be a resume")
     
-    # Experience analysis
-    exp_years, position_count, metrics = extract_experience(text)
+    text_lower = text.lower()
+    stop_words = set(stopwords.words('english'))
     
-    # Keyword analysis with synonyms
-    industry, keyword_matches = analyze_keywords_with_synonyms(text)
+    # Section Analysis
+    sections_found = [s for s in RESUME_SECTIONS if s in text_lower]
+    missing_sections = [s for s in RESUME_SECTIONS if s not in sections_found]
     
-    # Calculate scores
-    section_score = min(len(sections) * 10, 30)  # Max 30
-    exp_score = min(exp_years * 2 + position_count * 3 + metrics * 2, 40)  # Max 40
-    keyword_score = min(len(keyword_matches) * 2, 20)  # Max 20
-    format_score = analyze_formatting(text)  # Max 10
+    # Experience Analysis
+    exp_years = len(re.findall(r"(20\d{2}|'\d{2})\s*[-–—]\s*(20\d{2}|'\d{2}|present)", text_lower))
     
-    total_score = section_score + exp_score + keyword_score + format_score
-    normalized_score = min(max(40 + (total_score * 0.6), 40), 95)  # Scale to 40-95
-    
-    return {
-        "score": round(normalized_score),
-        "industry": industry,
-        "details": {
-            "sections": sections,
-            "missing_sections": missing_sections,
-            "experience_years": exp_years,
-            "positions": position_count,
-            "achievements": metrics,
-            "keywords": keyword_matches,
-            "formatting": format_score
-        },
-        "suggestions": generate_suggestions(sections, missing_sections, keyword_matches, exp_years, metrics)
+    # Keyword Analysis
+    keywords = {
+        "tech": ["python", "java", "sql", "aws"],
+        "business": ["management", "marketing", "sales"]
     }
-
-def analyze_keywords_with_synonyms(text: str) -> Tuple[str, List[str]]:
-    """Industry keyword analysis with synonym support"""
-    industry_scores = {}
-    all_matches = []
+    matched_keywords = []
+    industry_scores = {"tech": 0, "business": 0}
     
-    for industry, data in INDUSTRY_KEYWORDS.items():
-        score = 0
-        matches = []
-        
-        for primary_word in data["primary"]:
-            # Check primary word and all synonyms
-            search_terms = {primary_word} | get_synonyms(primary_word)
-            for term in search_terms:
-                if re.search(rf"\b{term}\b", text):
-                    matches.append(primary_word)  # Track the primary keyword
-                    score += 1
-                    break  # Count each primary word only once
-        
-        industry_scores[industry] = score
-        if matches:
-            all_matches.extend(matches)
+    for industry, terms in keywords.items():
+        for term in terms:
+            if re.search(rf"\b{term}\b", text_lower):
+                matched_keywords.append(term)
+                industry_scores[industry] += 1
     
-    top_industry = max(industry_scores.items(), key=lambda x: x[1])[0] if industry_scores else "general"
-    return top_industry, all_matches
-
-def generate_suggestions(sections, missing_sections, keywords, exp_years, metrics) -> List[str]:
-    """Generate personalized improvement suggestions"""
+    industry = max(industry_scores.items(), key=lambda x: x[1])[0]
+    
+    # Scoring (100-point scale)
+    section_score = len(sections_found) * 10
+    keyword_score = min(len(matched_keywords) * 2, 20)
+    experience_score = min(exp_years * 5, 25)
+    metrics_score = len(re.findall(r"\d+%|\$?\d+", text_lower)) * 2
+    
+    total_score = min(section_score + keyword_score + experience_score + metrics_score, 95)
+    total_score = max(total_score, 40)  # Minimum score
+    
+    # Suggestions
     suggestions = []
-    
     if missing_sections:
-        suggestions.append(f"Add missing sections: {', '.join(missing_sections)}")
-    
+        suggestions.append(f"Add missing section: {', '.join(missing_sections)}")
+    if industry_scores[industry] < 3:
+        suggestions.append(f"Add more {industry} keywords like: {', '.join(keywords[industry][:3])}")
     if exp_years < 2:
-        suggestions.append("Highlight any relevant experience, including internships or projects")
-    elif metrics < 3:
-        suggestions.append("Add more quantifiable achievements (e.g., 'Increased efficiency by 20%')")
+        suggestions.append("Highlight projects if work experience is limited")
     
-    # Industry-specific suggestions
-    industry_keywords = set(INDUSTRY_KEYWORDS.get("tech", {}).get("primary", []))
-    missing_keywords = [kw for kw in industry_keywords if kw not in keywords][:3]
-    if missing_keywords:
-        suggestions.append(f"Consider adding these keywords: {', '.join(missing_keywords)}")
-    
-    return suggestions
+    return AnalysisResult(
+        score=total_score,
+        industry=industry,
+        strengths=matched_keywords[:5],
+        suggestions=suggestions,
+        metrics={
+            "sections": len(sections_found),
+            "keywords": len(matched_keywords),
+            "experience_years": exp_years
+        }
+    )
 
-@app.post("/analyze")
-async def analyze_resume(file: UploadFile = File(...)):
-    """Main analysis endpoint"""
+# API Endpoints
+@app.post("/analyze", response_model=AnalysisResult)
+async def analyze(file: UploadFile = File(...)):
     try:
         text = extract_text(file)
-        if len(text.split()) < MIN_RESUME_WORDS:
-            raise HTTPException(400, "Document is too short to be a resume")
-        
-        return analyze_content(text)
-    
+        return analyze_resume(text)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Analysis error: {str(e)}")
+        raise HTTPException(500, f"Analysis failed: {str(e)}")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "5.0"}
+    return {"status": "ok", "version": "1.0"}
+
+# For Render deployment
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
