@@ -6,8 +6,23 @@ import tempfile
 import os
 import re
 import math
+from typing import Dict, List, Optional
+import spacy
+from collections import Counter
+import json
+from pathlib import Path
 
-app = FastAPI(title="Simple Resume Scorer", version="1.0")
+app = FastAPI(
+    title="Smart Resume Scorer",
+    version="2.0",
+    description="An intelligent resume scoring system with job-specific analysis"
+)
+
+# Load NLP model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    raise ImportError("Please install the spaCy English model: python -m spacy download en_core_web_sm")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,88 +32,275 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Configuration
+CONFIG = {
+    "max_score": 100,
+    "min_score": 10,
+    "job_profiles": {
+        "software_engineer": {
+            "keywords": ["python", "java", "c++", "algorithm", "data structure", "git", "agile", "debugging"],
+            "required_sections": ["experience", "education", "skills", "projects"],
+            "weight": {"keywords": 0.4, "sections": 0.3, "experience": 0.3}
+        },
+        "data_scientist": {
+            "keywords": ["python", "machine learning", "statistics", "sql", "data analysis", "pandas", "numpy"],
+            "required_sections": ["experience", "education", "skills", "projects"],
+            "weight": {"keywords": 0.5, "sections": 0.2, "experience": 0.3}
+        },
+        "marketing": {
+            "keywords": ["campaign", "social media", "seo", "content", "branding", "analytics", "strategy"],
+            "required_sections": ["experience", "education", "skills"],
+            "weight": {"keywords": 0.3, "sections": 0.4, "experience": 0.3}
+        },
+        "default": {
+            "keywords": [],
+            "required_sections": ["experience", "education", "skills"],
+            "weight": {"keywords": 0.3, "sections": 0.4, "experience": 0.3}
+        }
+    }
+}
+
 def extract_text(file: UploadFile) -> str:
-    """Extract text from PDF or DOCX files"""
+    """Extract text from PDF, DOCX, or TXT files with improved error handling"""
     try:
         if file.filename.endswith(".pdf"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(file.file.read())
                 tmp_path = tmp.name
             
-            with open(tmp_path, "rb") as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                text = " ".join([
-                    page.extract_text() for page in pdf_reader.pages
-                    if page.extract_text()
-                ])
-            
-            os.unlink(tmp_path)
-            return text
+            text = ""
+            try:
+                with open(tmp_path, "rb") as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    for page in pdf_reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+            except Exception as e:
+                raise ValueError(f"PDF parsing error: {str(e)}")
+            finally:
+                os.unlink(tmp_path)
+            return text.strip()
         
         elif file.filename.endswith(".docx"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                 tmp.write(file.file.read())
                 tmp_path = tmp.name
             
-            text = docx2txt.process(tmp_path)
-            os.unlink(tmp_path)
-            return text
+            try:
+                text = docx2txt.process(tmp_path)
+            except Exception as e:
+                raise ValueError(f"DOCX parsing error: {str(e)}")
+            finally:
+                os.unlink(tmp_path)
+            return text.strip()
         
-        raise HTTPException(status_code=400, detail="Unsupported file format")
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
-
-def calculate_score(text: str) -> int:
-    """Flexible scoring algorithm that gives reasonable scores"""
-    text_lower = text.lower()
-    
-    # Basic checks (0-40 points)
-    basic_score = 0
-    sections = ["experience", "education", "skills"]
-    basic_score += sum(10 for section in sections if section in text_lower)
-    
-    # Content quality (0-40 points)
-    content_score = 0
-    word_count = len(text.split())
-    if word_count > 200:
-        content_score += 20  # Base points for having content
-        content_score += min((word_count - 200) // 20, 20)  # Up to 20 more points for length
-    
-    # Keywords (0-20 points)
-    keyword_score = 0
-    common_keywords = [
-        "experience", "education", "skills", "project", "work", 
-        "university", "degree", "certification", "developed", 
-        "managed", "achieved", "improved"
-    ]
-    keyword_score = min(sum(1 for kw in common_keywords if kw in text_lower) * 2, 20)
-    
-    # Combine scores with flexible weighting
-    total_score = basic_score + content_score + keyword_score
-    
-    # Normalize to 40-90 range (avoiding extremes)
-    normalized_score = 40 + (total_score * 0.5)
-    
-    # Ensure score is within reasonable bounds
-    return min(max(round(normalized_score), 40), 90)
-
-@app.post("/score/")
-async def score_resume(file: UploadFile = File(...)):
-    """Simplified scoring endpoint"""
-    try:
-        text = extract_text(file)
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Empty file")
+        elif file.filename.endswith(".txt"):
+            return (await file.read()).decode("utf-8").strip()
         
-        score = calculate_score(text)
-        return {"score": score}
+        raise HTTPException(status_code=400, detail="Unsupported file format. Supported formats: PDF, DOCX, TXT")
     
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+def analyze_text(text: str) -> Dict:
+    """Perform advanced text analysis using NLP"""
+    doc = nlp(text)
+    
+    # Extract entities
+    entities = [ent.text.lower() for ent in doc.ents if ent.label_ in ["ORG", "DATE", "GPE"]]
+    
+    # Extract skills (noun phrases containing specific patterns)
+    skills = []
+    for chunk in doc.noun_chunks:
+        if any(token.text.lower() in ["skill", "experience", "knowledge"] for token in chunk):
+            skills.append(chunk.text.lower())
+    
+    # Count sections by looking for headings (text in all caps or with following colon)
+    sections = []
+    for sent in doc.sents:
+        if len(sent.text) < 50 and (sent.text.isupper() or ":" in sent.text):
+            sections.append(sent.text.split(":")[0].strip().lower())
+    
+    return {
+        "word_count": len(text.split()),
+        "entities": entities,
+        "skills": skills,
+        "sections": sections,
+        "readability": calculate_readability(text)
+    }
+
+def calculate_readability(text: str) -> float:
+    """Calculate Flesch Reading Ease score"""
+    sentences = [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
+    words = [w for w in re.findall(r'\b\w+\b', text.lower()) if w]
+    
+    if not sentences or not words:
+        return 0
+    
+    avg_sentence_length = len(words) / len(sentences)
+    syllables = sum([count_syllables(word) for word in words])
+    avg_syllables = syllables / len(words)
+    
+    return 206.835 - (1.015 * avg_sentence_length) - (84.6 * avg_syllables)
+
+def count_syllables(word: str) -> int:
+    """Approximate syllable counting"""
+    word = word.lower()
+    count = 0
+    vowels = "aeiouy"
+    
+    if word[0] in vowels:
+        count += 1
+    
+    for i in range(1, len(word)):
+        if word[i] in vowels and word[i-1] not in vowels:
+            count += 1
+    
+    if word.endswith("e"):
+        count -= 1
+    
+    return max(1, count)
+
+def calculate_job_specific_score(text: str, analysis: Dict, job_profile: str) -> int:
+    """Calculate score based on specific job requirements"""
+    profile = CONFIG["job_profiles"].get(job_profile, CONFIG["job_profiles"]["default"])
+    text_lower = text.lower()
+    score = 0
+    
+    # Section coverage (30%)
+    section_score = 0
+    found_sections = [section for section in profile["required_sections"] 
+                     if any(s in " ".join(analysis["sections"]) for s in [section, f"{section}s"])]
+    section_coverage = len(found_sections) / len(profile["required_sections"])
+    section_score = section_coverage * 30
+    
+    # Keyword matching (40%)
+    keyword_score = 0
+    found_keywords = [kw for kw in profile["keywords"] if kw in text_lower]
+    if profile["keywords"]:
+        keyword_coverage = len(found_keywords) / len(profile["keywords"])
+        keyword_score = keyword_coverage * 40
+    
+    # Experience quality (30%)
+    experience_score = 0
+    experience_phrases = ["years", "experience", "worked", "developed", "managed"]
+    experience_matches = sum(1 for phrase in experience_phrases if phrase in text_lower)
+    experience_score = min(experience_matches, 10) * 3
+    
+    # Combine scores with weights
+    weights = profile["weight"]
+    weighted_score = (
+        (section_score * weights["sections"]) +
+        (keyword_score * weights["keywords"]) +
+        (experience_score * weights["experience"])
+    )
+    
+    # Adjust for document quality
+    quality_factor = min(analysis["word_count"] / 500, 1)  # Normalize based on length
+    final_score = weighted_score * quality_factor
+    
+    # Ensure score is within bounds
+    return min(max(round(final_score), CONFIG["min_score"]), CONFIG["max_score"])
+
+def generate_feedback(score: int, analysis: Dict, job_profile: str) -> Dict:
+    """Generate constructive feedback based on the analysis"""
+    profile = CONFIG["job_profiles"].get(job_profile, CONFIG["job_profiles"]["default"])
+    feedback = {
+        "score": score,
+        "strengths": [],
+        "improvements": []
+    }
+    
+    # Check sections
+    found_sections = [section for section in profile["required_sections"] 
+                     if any(s in " ".join(analysis["sections"]) for s in [section, f"{section}s"])]
+    
+    if len(found_sections) == len(profile["required_sections"]):
+        feedback["strengths"].append("All important sections are included")
+    else:
+        missing = set(profile["required_sections"]) - set(found_sections)
+        feedback["improvements"].append(f"Add missing sections: {', '.join(missing)}")
+    
+    # Check keywords
+    if profile["keywords"]:
+        found_keywords = [kw for kw in profile["keywords"] if kw in " ".join(analysis["skills"] + analysis["entities"]).lower()]
+        if found_keywords:
+            feedback["strengths"].append(f"Contains relevant keywords: {', '.join(found_keywords[:5])}{'...' if len(found_keywords) > 5 else ''}")
+        
+        if len(found_keywords) < len(profile["keywords"]) / 2:
+            feedback["improvements"].append("Include more job-specific keywords from the industry")
+    
+    # Check length
+    if analysis["word_count"] < 200:
+        feedback["improvements"].append("Resume is too short - consider adding more details about your experience")
+    elif analysis["word_count"] > 800:
+        feedback["improvements"].append("Resume is too long - consider making it more concise")
+    
+    # Check readability
+    if analysis["readability"] < 50:
+        feedback["improvements"].append("Improve readability - use simpler sentences and bullet points")
+    
+    return feedback
+
+@app.post("/score/")
+async def score_resume(
+    file: UploadFile = File(...),
+    job_profile: Optional[str] = "default"
+) -> Dict:
+    """
+    Score a resume with optional job profile matching
+    
+    Parameters:
+    - file: The resume file (PDF, DOCX, or TXT)
+    - job_profile: Optional job profile to match against (software_engineer, data_scientist, marketing)
+    
+    Returns:
+    - JSON with score, analysis, and feedback
+    """
+    try:
+        # Validate job profile
+        if job_profile not in CONFIG["job_profiles"]:
+            job_profile = "default"
+        
+        # Extract and analyze text
+        text = extract_text(file)
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        analysis = analyze_text(text)
+        score = calculate_job_specific_score(text, analysis, job_profile)
+        feedback = generate_feedback(score, analysis, job_profile)
+        
+        return {
+            "score": score,
+            "job_profile": job_profile,
+            "analysis": {
+                "word_count": analysis["word_count"],
+                "sections_found": analysis["sections"],
+                "readability_score": analysis["readability"],
+                "skills_identified": analysis["skills"][:10]  # Return top 10 skills
+            },
+            "feedback": feedback
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing resume: {str(e)}")
+
+@app.get("/job_profiles/")
+def list_job_profiles() -> List[str]:
+    """List available job profiles for scoring"""
+    return list(CONFIG["job_profiles"].keys())
 
 @app.get("/")
-def health_check():
-    return {"status": "OK"}
+def health_check() -> Dict:
+    """Service health check"""
+    return {
+        "status": "OK",
+        "version": app.version,
+        "supported_job_profiles": list(CONFIG["job_profiles"].keys())
+    }
