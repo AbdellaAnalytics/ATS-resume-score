@@ -7,22 +7,13 @@ import os
 import re
 import math
 from typing import Dict, List, Optional
-import spacy
-from collections import Counter
-import json
-from pathlib import Path
+from collections import defaultdict
 
 app = FastAPI(
     title="Smart Resume Scorer",
     version="2.0",
-    description="An intelligent resume scoring system with job-specific analysis"
+    description="An intelligent resume scoring system with job-specific analysis (spaCy-free version)"
 )
-
-# Load NLP model
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    raise ImportError("Please install the spaCy English model: python -m spacy download en_core_web_sm")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,17 +29,20 @@ CONFIG = {
     "min_score": 10,
     "job_profiles": {
         "software_engineer": {
-            "keywords": ["python", "java", "c++", "algorithm", "data structure", "git", "agile", "debugging"],
+            "keywords": ["python", "java", "c++", "algorithm", "data structure", 
+                        "git", "agile", "debugging", "database", "api"],
             "required_sections": ["experience", "education", "skills", "projects"],
             "weight": {"keywords": 0.4, "sections": 0.3, "experience": 0.3}
         },
         "data_scientist": {
-            "keywords": ["python", "machine learning", "statistics", "sql", "data analysis", "pandas", "numpy"],
+            "keywords": ["python", "machine learning", "statistics", "sql", 
+                        "data analysis", "pandas", "numpy", "visualization", "ai"],
             "required_sections": ["experience", "education", "skills", "projects"],
             "weight": {"keywords": 0.5, "sections": 0.2, "experience": 0.3}
         },
         "marketing": {
-            "keywords": ["campaign", "social media", "seo", "content", "branding", "analytics", "strategy"],
+            "keywords": ["campaign", "social media", "seo", "content", 
+                        "branding", "analytics", "strategy", "digital", "market"],
             "required_sections": ["experience", "education", "skills"],
             "weight": {"keywords": 0.3, "sections": 0.4, "experience": 0.3}
         },
@@ -57,7 +51,12 @@ CONFIG = {
             "required_sections": ["experience", "education", "skills"],
             "weight": {"keywords": 0.3, "sections": 0.4, "experience": 0.3}
         }
-    }
+    },
+    "common_section_headers": [
+        "experience", "education", "skills", "projects",
+        "work history", "professional experience", 
+        "technical skills", "certifications"
+    ]
 }
 
 def extract_text(file: UploadFile) -> str:
@@ -106,34 +105,55 @@ def extract_text(file: UploadFile) -> str:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 def analyze_text(text: str) -> Dict:
-    """Perform advanced text analysis using NLP"""
-    doc = nlp(text)
+    """Perform text analysis using regex and simple NLP techniques"""
+    text_lower = text.lower()
     
-    # Extract entities
-    entities = [ent.text.lower() for ent in doc.ents if ent.label_ in ["ORG", "DATE", "GPE"]]
-    
-    # Extract skills (noun phrases containing specific patterns)
-    skills = []
-    for chunk in doc.noun_chunks:
-        if any(token.text.lower() in ["skill", "experience", "knowledge"] for token in chunk):
-            skills.append(chunk.text.lower())
-    
-    # Count sections by looking for headings (text in all caps or with following colon)
+    # Extract sections by looking for headings (text in all caps or with following colon)
     sections = []
-    for sent in doc.sents:
-        if len(sent.text) < 50 and (sent.text.isupper() or ":" in sent.text):
-            sections.append(sent.text.split(":")[0].strip().lower())
+    lines = text.split('\n')
+    for line in lines:
+        clean_line = line.strip()
+        if len(clean_line) < 50:  # Likely a heading if short
+            # Check for section headers
+            if any(header in clean_line.lower() for header in CONFIG["common_section_headers"]):
+                section_name = clean_line.split(':')[0].strip().lower()
+                sections.append(section_name)
+            # Check ALL CAPS headings
+            elif clean_line.isupper() and len(clean_line.split()) < 5:
+                sections.append(clean_line.lower())
+    
+    # Extract skills by looking for common patterns
+    skills = set()
+    skill_patterns = [
+        r"(?:proficient in|skilled in|expertise in|skills?)[:;\s]*(.*?)(?:\n|\.|$)",
+        r"(?:technical skills?|programming languages?)[:;\s]*(.*?)(?:\n|\.|$)"
+    ]
+    for pattern in skill_patterns:
+        matches = re.findall(pattern, text_lower, re.IGNORECASE)
+        for match in matches:
+            # Split skills by commas, slashes, etc.
+            for skill in re.split(r'[,/;]', match):
+                clean_skill = skill.strip()
+                if clean_skill and len(clean_skill.split()) < 4:  # Skip long phrases
+                    skills.add(clean_skill)
+    
+    # Count word frequency for important terms
+    words = re.findall(r'\b\w+\b', text_lower)
+    word_freq = defaultdict(int)
+    for word in words:
+        if len(word) > 3:  # Ignore short words
+            word_freq[word] += 1
     
     return {
-        "word_count": len(text.split()),
-        "entities": entities,
-        "skills": skills,
-        "sections": sections,
+        "word_count": len(words),
+        "sections": list(set(sections)),  # Remove duplicates
+        "skills": list(skills),
+        "word_freq": dict(word_freq),
         "readability": calculate_readability(text)
     }
 
 def calculate_readability(text: str) -> float:
-    """Calculate Flesch Reading Ease score"""
+    """Calculate Flesch Reading Ease score without complex NLP"""
     sentences = [s.strip() for s in re.split(r'[.!?]', text) if s.strip()]
     words = [w for w in re.findall(r'\b\w+\b', text.lower()) if w]
     
@@ -147,19 +167,24 @@ def calculate_readability(text: str) -> float:
     return 206.835 - (1.015 * avg_sentence_length) - (84.6 * avg_syllables)
 
 def count_syllables(word: str) -> int:
-    """Approximate syllable counting"""
-    word = word.lower()
-    count = 0
+    """Approximate syllable counting without NLP"""
+    word = word.lower().strip(".:;?!")
+    if len(word) <= 3:
+        return 1
+    
     vowels = "aeiouy"
+    count = 0
+    prev_char_was_vowel = False
     
-    if word[0] in vowels:
-        count += 1
-    
-    for i in range(1, len(word)):
-        if word[i] in vowels and word[i-1] not in vowels:
+    for char in word:
+        if char in vowels and not prev_char_was_vowel:
             count += 1
+            prev_char_was_vowel = True
+        else:
+            prev_char_was_vowel = False
     
-    if word.endswith("e"):
+    # Adjust for common endings
+    if word.endswith(('es', 'ed')) and not word.endswith(('ses', 'sed', 'xes', 'xed')):
         count -= 1
     
     return max(1, count)
@@ -175,32 +200,35 @@ def calculate_job_specific_score(text: str, analysis: Dict, job_profile: str) ->
     found_sections = [section for section in profile["required_sections"] 
                      if any(s in " ".join(analysis["sections"]) for s in [section, f"{section}s"])]
     section_coverage = len(found_sections) / len(profile["required_sections"])
-    section_score = section_coverage * 30
+    section_score = section_coverage * 30 * profile["weight"]["sections"]
     
     # Keyword matching (40%)
     keyword_score = 0
-    found_keywords = [kw for kw in profile["keywords"] if kw in text_lower]
     if profile["keywords"]:
-        keyword_coverage = len(found_keywords) / len(profile["keywords"])
-        keyword_score = keyword_coverage * 40
+        # Check both in skills and full text
+        found_in_skills = sum(1 for kw in profile["keywords"] 
+                            if any(kw in skill for skill in analysis["skills"]))
+        found_in_text = sum(1 for kw in profile["keywords"] if kw in text_lower)
+        found_keywords = max(found_in_skills, found_in_text)
+        
+        keyword_coverage = found_keywords / len(profile["keywords"])
+        keyword_score = keyword_coverage * 40 * profile["weight"]["keywords"]
     
     # Experience quality (30%)
     experience_score = 0
-    experience_phrases = ["years", "experience", "worked", "developed", "managed"]
+    experience_phrases = [
+        "years", "experience", "worked", "developed", "managed",
+        "led", "created", "implemented", "achieved", "improved"
+    ]
     experience_matches = sum(1 for phrase in experience_phrases if phrase in text_lower)
-    experience_score = min(experience_matches, 10) * 3
+    experience_score = min(experience_matches, 10) * 3 * profile["weight"]["experience"]
     
-    # Combine scores with weights
-    weights = profile["weight"]
-    weighted_score = (
-        (section_score * weights["sections"]) +
-        (keyword_score * weights["keywords"]) +
-        (experience_score * weights["experience"])
-    )
+    # Combine scores
+    total_score = section_score + keyword_score + experience_score
     
     # Adjust for document quality
     quality_factor = min(analysis["word_count"] / 500, 1)  # Normalize based on length
-    final_score = weighted_score * quality_factor
+    final_score = total_score * quality_factor
     
     # Ensure score is within bounds
     return min(max(round(final_score), CONFIG["min_score"]), CONFIG["max_score"])
@@ -211,7 +239,8 @@ def generate_feedback(score: int, analysis: Dict, job_profile: str) -> Dict:
     feedback = {
         "score": score,
         "strengths": [],
-        "improvements": []
+        "improvements": [],
+        "job_profile": job_profile
     }
     
     # Check sections
@@ -226,12 +255,19 @@ def generate_feedback(score: int, analysis: Dict, job_profile: str) -> Dict:
     
     # Check keywords
     if profile["keywords"]:
-        found_keywords = [kw for kw in profile["keywords"] if kw in " ".join(analysis["skills"] + analysis["entities"]).lower()]
+        found_keywords = [kw for kw in profile["keywords"] 
+                        if kw in " ".join(analysis["skills"]) or kw in " ".join(analysis["sections"])]
         if found_keywords:
-            feedback["strengths"].append(f"Contains relevant keywords: {', '.join(found_keywords[:5])}{'...' if len(found_keywords) > 5 else ''}")
+            feedback["strengths"].append(
+                f"Contains relevant keywords: {', '.join(found_keywords[:5])}"
+                f"{'...' if len(found_keywords) > 5 else ''}"
+            )
         
         if len(found_keywords) < len(profile["keywords"]) / 2:
-            feedback["improvements"].append("Include more job-specific keywords from the industry")
+            feedback["improvements"].append(
+                f"Include more {job_profile.replace('_', ' ')} keywords like: "
+                f"{', '.join(list(set(profile['keywords']) - set(found_keywords))[:5])}"
+            )
     
     # Check length
     if analysis["word_count"] < 200:
@@ -242,6 +278,12 @@ def generate_feedback(score: int, analysis: Dict, job_profile: str) -> Dict:
     # Check readability
     if analysis["readability"] < 50:
         feedback["improvements"].append("Improve readability - use simpler sentences and bullet points")
+    elif analysis["readability"] > 80:
+        feedback["strengths"].append("Excellent readability - easy to understand")
+    
+    # Add skills feedback
+    if analysis["skills"]:
+        feedback["strengths"].append(f"Skills identified: {', '.join(analysis['skills'][:5])}{'...' if len(analysis['skills']) > 5 else ''}")
     
     return feedback
 
@@ -280,8 +322,8 @@ async def score_resume(
             "analysis": {
                 "word_count": analysis["word_count"],
                 "sections_found": analysis["sections"],
-                "readability_score": analysis["readability"],
-                "skills_identified": analysis["skills"][:10]  # Return top 10 skills
+                "skills_identified": analysis["skills"][:10],  # Return top 10 skills
+                "readability_score": round(analysis["readability"], 1)
             },
             "feedback": feedback
         }
